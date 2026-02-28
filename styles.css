@@ -129,6 +129,10 @@ select {
   font-size: 18px
 }
 
+#iosInstallModal {
+  display: none;
+}
+
 .card .stats {
   display: flex;
   justify-content: space-around;

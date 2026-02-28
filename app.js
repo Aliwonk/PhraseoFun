@@ -65,15 +65,38 @@ function htmlEscape(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function isIOS() {
+  return (
+    /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) // iPadOS маскируется под Mac
+  );
+}
+
+function isStandalone() {
+  // iOS Safari: navigator.standalone, остальные: display-mode
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
 /* ---------- PWA install + SW ---------- */
 let deferredPrompt = null;
 const installBtn = document.querySelector("#installBtn");
+const iosInstallModal = document.querySelector("#iosInstallModal");
+
+if (isIOS() && !isStandalone()) {
+  installBtn.classList.add("show");
+
+  installBtn.addEventListener("click", () => {
+    iosInstallModal.classList.add("show");
+  });
+}
+
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   console.log("Браузер готов к установке PWA");
   deferredPrompt = e;
   installBtn.classList.add("show");
 });
+
 installBtn.addEventListener("click", async () => {
   if (!deferredPrompt) return;
   deferredPrompt.prompt();
@@ -132,6 +155,22 @@ function renderModules() {
 
   app.innerHTML = `
     <div class="grid">
+      <section class="card" id="iosInstallModal">
+          <b>Установка на iPhone:</b>
+          <ol>
+            <li>Откройте сайт в Safari</li>
+            <li>Нажмите “Поделиться”</li>
+            <li>Выберите “На экран Домой”</li>
+          </ol>
+          <button
+            class="btn btn-modal"
+            onclick="
+              document.querySelector('#iosInstallModal').classList.remove('show')
+            "
+          >
+            Закрыть
+          </button>
+      </section>
       <section class="card">
         <div class="stats">
           <!-- Модули -->
