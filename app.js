@@ -180,10 +180,12 @@ function renderModules() {
 
         <div class="controls">
           <input id="q" placeholder="Поиск по теме…" />
-          <select id="level">
-            <option value="">Все уровни</option>
-            ${levels.map(l => `<option value="${htmlEscape(l)}">${htmlEscape(l)}</option>`).join("")}
-          </select>
+          <div class="select-wrap">
+            <select id="level" class="select">
+              <option value="">Все уровни</option>
+              ${levels.map(l => `<option value="${htmlEscape(l)}">${htmlEscape(l)}</option>`).join("")}
+            </select>
+          </div>
         </div>
       </section>
 
