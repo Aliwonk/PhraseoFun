@@ -35,6 +35,24 @@
         <!-- <a href="#/about" data-route="about">О проекте</a> -->
       </nav>
     </header>
+    <div class="container notice" id="top-banner">
+      <div class="card" id="iosInstallModal">
+        <b>Установка на iPhone:</b>
+        <ol>
+          <li>Откройте сайт в Safari</li>
+          <li>Нажмите “Поделиться”</li>
+          <li>Выберите “На экран Домой”</li>
+        </ol>
+        <button
+          class="btn btn-modal"
+          onclick="
+            document.querySelector('#top-banner').classList.remove('show')
+          "
+        >
+          Закрыть
+        </button>
+      </div>
+    </div>
     <main class="container" id="app"></main>
 
     <script type="module" src="./app.js"></script>

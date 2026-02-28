@@ -129,10 +129,6 @@ select {
   font-size: 18px
 }
 
-#iosInstallModal {
-  display: none;
-}
-
 .card .stats {
   display: flex;
   justify-content: space-around;
@@ -203,7 +199,7 @@ select {
 }
 
 .select {
-  appearance: none;   
+  appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
   padding-right: 2.5rem;
@@ -439,5 +435,5 @@ select {
 }
 
 .notice.show {
-  display: inline-flex
+  display: block
 }
