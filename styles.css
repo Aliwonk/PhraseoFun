@@ -85,6 +85,15 @@ select {
   align-items: center;
   color: var(--muted);
   font-size: 13px;
+  width: max-content;
+}
+
+.pill #pill-xp {
+  background: rgba(56, 189, 248, .12);
+  border: 1px solid rgba(56, 189, 248, .35);
+  color: #bae6fd;
+  border-radius: 14px;
+  text-align: center;
 }
 
 .nav {
@@ -148,14 +157,12 @@ select {
 }
 
 .stat .stat-icon {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   /* color: #554BD9; */
-  width: 34px;
-  height: 34px;
 }
 
 .stat .stat-text {
