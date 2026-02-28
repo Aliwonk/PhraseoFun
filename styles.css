@@ -300,9 +300,7 @@ select {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  height: stretch;
-  height: -webkit-fill-available;
-  /* gap: 10px; */
+  gap: 60px;
   align-items: center
 }
 
