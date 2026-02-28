@@ -1,38 +1,46 @@
 <!doctype html>
 <html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#0b1220" />
-  <meta name="description" content="PhraseoFun — тренажёр английских фразеологизмов (PWA)" />
-  <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" href="./icons/icon-192.png" />
-  <link rel="apple-touch-icon" href="./icons/icon-180.png" />
-  <link rel="stylesheet" href="./styles.css" />
-  <title>PhraseoFun</title>
-</head>
-<body>
-  <header class="topbar">
-    <div class="brand">
-      <img src="./icons/icon-192.png" alt="PhraseoFun" />
-      <div>
-        <h1>PhraseoFun</h1>
-        <div class="meta">Тренажёр английских фразеологизмов</div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1220" />
+    <meta
+      name="description"
+      content="PhraseoFun — тренажёр английских фразеологизмов (PWA)"
+    />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>PhraseoFun</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="./icons/icon-192.png" alt="PhraseoFun" />
+        <div>
+          <h1>PhraseoFun</h1>
+          <div class="meta">Тренажёр английских фразеологизмов</div>
+        </div>
+        <div class="pill">
+          <!-- <span id="pill-xp">XP: 0</span> -->
+          <button id="installBtn" class="btn secondary notice" type="button">
+            Установить
+          </button>
+          <button id="iosInstallBtn" class="btn secondary notice" type="button">
+            Установить
+          </button>
+        </div>
       </div>
-      <div class="pill">
-        <!-- <span id="pill-xp">XP: 0</span> -->
-        <button id="installBtn" class="btn secondary notice" type="button">Установить</button>
-      </div>
-    </div>
-    <nav class="nav" id="nav">
-      <a href="#/modules" data-route="modules">Модули</a>
-      <a href="#/profile" data-route="profile">Профиль</a>
-      <!-- <a href="#/about" data-route="about">О проекте</a> -->
-    </nav>
-  </header>
+      <nav class="nav" id="nav">
+        <a href="#/modules" data-route="modules">Модули</a>
+        <a href="#/profile" data-route="profile">Профиль</a>
+        <!-- <a href="#/about" data-route="about">О проекте</a> -->
+      </nav>
+    </header>
 
-  <main class="container" id="app"></main>
+    <main class="container" id="app"></main>
 
-  <script type="module" src="./app.js"></script>
-</body>
+    <script type="module" src="./app.js"></script>
+  </body>
 </html>

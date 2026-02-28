@@ -67,9 +67,10 @@ function htmlEscape(s) {
 
 /* ---------- PWA install + SW ---------- */
 let deferredPrompt = null;
-const installBtn = $("#installBtn");
+const installBtn = document.querySelector("#installBtn");
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
+  console.log("Браузер готов к установке PWA");
   deferredPrompt = e;
   installBtn.classList.add("show");
 });
@@ -78,6 +79,12 @@ installBtn.addEventListener("click", async () => {
   deferredPrompt.prompt();
   await deferredPrompt.userChoice;
   deferredPrompt = null;
+  installBtn.classList.remove("show");
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredPrompt = null;
+  alert("Приложение установлено!");
   installBtn.classList.remove("show");
 });
 
@@ -123,15 +130,53 @@ function renderModules() {
   const grades = uniq(modules.map(m => m.grade).filter(Boolean));
   const levels = uniq(modules.map(m => m.level).filter(Boolean));
 
-  // <select id="grade">
-  //   <option value="">Все классы</option>
-  //   ${grades.map(g => `<option value="${htmlEscape(g)}">${htmlEscape(g)} класс</option>`).join("")}
-  // </select>
   app.innerHTML = `
     <div class="grid">
       <section class="card">
-        <h2>Тематические модули</h2>
-        <div class="meta">Выбирай модуль → учи фразеологизмы → пройди мини‑квиз и получи XP.</div>
+        <div class="stats">
+          <!-- Модули -->
+          <div class="stat">
+            <div class="stat-icon">
+              <!-- document.svg (inline) -->
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 3h6l4 4v14H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>
+                <path d="M14 3v5h5"/>
+                <path d="M9 12h6"/>
+                <path d="M9 16h6"/>
+              </svg>
+            </div>
+            <div class="stat-text">${modules.length}</div>
+            <div class="stat-text">Модулей</div>
+          </div>
+
+          <!-- Фразы -->
+          <div class="stat">
+            <div class="stat-icon">
+              <!-- quotes.svg (inline) -->
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 17H5a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h4v8a3 3 0 0 1-2 3z"/>
+                <path d="M21 17h-2a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h4v8a3 3 0 0 1-2 3z"/>
+              </svg>
+            </div>
+            <div class="stat-text">${phrases.length}</div>
+            <div class="stat-text">Фраз</div>
+          </div>
+
+          <!-- Уровни -->
+          <div class="stat">
+            <div class="stat-icon">
+              <!-- star.svg (inline) -->
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l3.1 6.5 7.2 1-5.2 5 1.3 7.1L12 18.8 5.6 21.6l1.3-7.1-5.2-5 7.2-1L12 2z"/>
+              </svg>
+            </div>
+            <div class="stat-text">${levels.length}</div>
+            <div class="stat-text">Уровней</div>
+          </div>
+        </div>
 
         <div class="controls">
           <input id="q" placeholder="Поиск по теме…" />

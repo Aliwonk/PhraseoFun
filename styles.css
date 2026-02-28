@@ -129,6 +129,41 @@ select {
   font-size: 18px
 }
 
+.card .stats {
+  display: flex;
+  justify-content: space-around;
+  gap: 20px;
+  margin-bottom: 12px;
+}
+
+.stats .stat {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  width: 100px;
+  gap: 3px;
+  border: 1px solid rgba(148, 163, 184, .16);
+  background: rgba(15, 27, 51, .55);
+  border-radius: 14px;
+  padding: 10px;
+}
+
+.stat .stat-icon {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* color: #554BD9; */
+  width: 34px;
+  height: 34px;
+}
+
+.stat .stat-text {
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .meta {
   color: var(--muted);
   font-size: 13px
