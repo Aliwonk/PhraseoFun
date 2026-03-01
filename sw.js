@@ -1,11 +1,13 @@
-const CACHE_NAME = "phraseofun-pwa-v1";
+const CACHE_NAME = "phraseofun-pwa-v2";
 const PRECACHE = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./data.js",
-  "./manifest.json",
+  "./supabaseClient.js",
+  "./supabaseConfig.js",
+  "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/icon-180.png"
@@ -13,9 +15,13 @@ const PRECACHE = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    await cache.addAll(PRECACHE);
-    self.skipWaiting();
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.addAll(PRECACHE);
+      self.skipWaiting();
+    } catch (error) {
+      console.log("Ошибка при установке Service Worker:", error);
+    }
   })());
 });
 
@@ -45,7 +51,6 @@ self.addEventListener("fetch", (event) => {
     })());
     return;
   }
-
   if (url.origin === self.location.origin) {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);

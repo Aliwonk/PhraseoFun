@@ -1,4 +1,5 @@
 import { modules, phrasesById, getModuleById, phrases } from "./data.js";
+import { getSupabaseClient, isSupabaseConfigured } from "./supabaseClient.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -23,19 +24,31 @@ function loadState() {
       completed: st.completed || {},
       favorites: st.favorites || [],
       streak: st.streak || { count: 0, lastDate: null },
+      settings: st.settings || { sync: true },
+      meta: st.meta || { updatedAt: 0, lastSyncAt: null },
     };
   } catch {
-    return { xp: 0, completed: {}, favorites: [], streak: { count: 0, lastDate: null } };
+    return {
+      xp: 0,
+      completed: {},
+      favorites: [],
+      streak: { count: 0, lastDate: null },
+      settings: { sync: true },
+      meta: { updatedAt: 0, lastSyncAt: null },
+    };
   }
 }
 
-function saveState() {
+function saveState({ skipSync = false } = {}) {
+  state.meta = state.meta || { updatedAt: 0, lastSyncAt: null };
+  state.meta.updatedAt = Date.now();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   // $("#pill-xp").textContent = `XP: ${state.xp}`;
+  if (!skipSync) queueSync();
 }
 
-let state = loadState();
-saveState();
+let state = normalizeState(loadState());
+saveState({ skipSync: true });
 
 function xpToLevel(xp) {
   return Math.floor(Math.sqrt(xp / 50)) + 1;
@@ -74,6 +87,185 @@ function isIOS() {
 
 function isStandalone() {
   return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+/* ---------- Supabase auth + sync ---------- */
+let sb = null;
+let authUser = null;
+let authInitDone = false;
+let authInitPromise = null;
+let authBanner = { type: null, text: "" };
+let syncTimer = null;
+
+function normalizeState(st) {
+  const base = {
+    xp: 0,
+    completed: {},
+    favorites: [],
+    streak: { count: 0, lastDate: null },
+    settings: { sync: true },
+    meta: { updatedAt: 0, lastSyncAt: null },
+  };
+  const s = Object.assign({}, base, st || {});
+  s.xp = Number(s.xp || 0);
+  s.completed = s.completed || {};
+  s.favorites = Array.isArray(s.favorites) ? s.favorites : [];
+  s.streak = s.streak || { count: 0, lastDate: null };
+  s.settings = s.settings || { sync: true };
+  s.meta = s.meta || { updatedAt: 0, lastSyncAt: null };
+  s.meta.updatedAt = Number(s.meta.updatedAt || 0);
+  return s;
+}
+
+async function ensureSupabase() {
+  if (sb) return sb;
+  if (!isSupabaseConfigured()) return null;
+  try {
+    sb = await getSupabaseClient();
+    return sb;
+  } catch (e) {
+    console.error(e);
+    sb = null;
+    return null;
+  }
+}
+
+async function initAuthOnce() {
+  if (authInitDone) return;
+  if (authInitPromise) return authInitPromise;
+
+  authInitPromise = (async () => {
+    const client = await ensureSupabase();
+    if (!client) {
+      authInitDone = true;
+      return;
+    }
+
+    try {
+      const { data } = await client.auth.getSession();
+      authUser = data?.session?.user || null;
+    } catch (e) {
+      console.error(e);
+    }
+
+    client.auth.onAuthStateChange((_event, session) => {
+      authUser = session?.user || null;
+      if (parseRoute().route === "profile") renderProfile();
+      if (authUser && state.settings?.sync) queueSync(true);
+    });
+
+    authInitDone = true;
+  })();
+
+  await authInitPromise;
+  authInitPromise = null;
+}
+
+function setAuthBanner(type, text) {
+  authBanner = { type, text: text || "" };
+  if (parseRoute().route === "profile") {
+    const el = document.querySelector("#authBanner");
+    if (el) {
+      el.className = `alert ${type || ""}`.trim();
+      el.style.display = text ? "block" : "none";
+      el.textContent = text;
+    }
+  }
+}
+
+function queueSync(immediate = false) {
+  if (!state.settings?.sync) return;
+  if (!authUser) return;
+  if (!isSupabaseConfigured()) return;
+  if (!navigator.onLine) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    syncNow().catch(() => { });
+  }, immediate ? 200 : 1200);
+}
+
+async function fetchRemoteState() {
+  const client = await ensureSupabase();
+  if (!client || !authUser) return null;
+  const q = client
+    .from("student_state")
+    .select("state")
+    .eq("user_id", authUser.id);
+
+  const resp = q.maybeSingle ? await q.maybeSingle() : await q.single();
+  const { data, error } = resp || {};
+
+  if (error) {
+    const msg = String(error.message || "").toLowerCase();
+    const code = String(error.code || "");
+    if (code === "PGRST116" || msg.includes("no rows") || msg.includes("0 rows")) return null;
+    throw error;
+  }
+  return data?.state || null;
+}
+
+async function pushRemoteState() {
+  const client = await ensureSupabase();
+  if (!client || !authUser) return;
+  const payload = {
+    user_id: authUser.id,
+    state: state,
+  };
+  const { error } = await client
+    .from("student_state")
+    .upsert(payload, { onConflict: "user_id" });
+
+  if (error) throw error;
+  state.meta.lastSyncAt = new Date().toISOString();
+  saveState({ skipSync: true });
+}
+
+async function reconcileStateAfterLogin() {
+  let remote = null;
+  try {
+    remote = await fetchRemoteState();
+  } catch (e) {
+    console.error(e);
+    setAuthBanner(
+      "bad",
+      "Вход выполнен, но синхронизация недоступна: проверь таблицу student_state и RLS (см. README)."
+    );
+    return;
+  }
+
+  if (remote) {
+    const r = normalizeState(remote);
+    const rUpd = Number(r.meta?.updatedAt || 0);
+    const lUpd = Number(state.meta?.updatedAt || 0);
+    if (rUpd > lUpd) {
+      state = r;
+      saveState({ skipSync: true });
+      setAuthBanner("good", "Прогресс загружен из облака Supabase.");
+      render();
+      return;
+    }
+  }
+
+  try {
+    await pushRemoteState();
+    setAuthBanner("good", "Прогресс синхронизирован с Supabase.");
+  } catch (e) {
+    console.error(e);
+    setAuthBanner("bad", "Не удалось синхронизировать прогресс. Проверь настройки RLS.");
+  }
+}
+
+async function syncNow() {
+  if (!state.settings?.sync) return;
+  if (!authUser) return;
+  if (!navigator.onLine) return;
+  try {
+    await pushRemoteState();
+    if (parseRoute().route === "profile") renderProfile();
+  } catch (e) {
+    console.error(e);
+    setAuthBanner("bad", "Ошибка синхронизации. Проверь интернет и RLS.");
+  }
 }
 
 /* ---------- PWA install + SW ---------- */
@@ -133,6 +325,10 @@ window.addEventListener("hashchange", render);
 window.addEventListener("load", () => {
   if (!location.hash) location.hash = "#/modules";
   render();
+
+  if (isSupabaseConfigured() && navigator.onLine) {
+    initAuthOnce().catch(() => { });
+  }
 });
 
 /* ---------- Views ---------- */
@@ -514,6 +710,12 @@ function renderProfile() {
   app.innerHTML = `
     <div class="grid">
       <section class="card">
+        <h2>Аккаунт ученика</h2>
+        <div id="authBanner" class="alert ${authBanner.type || ""}" style="display:${authBanner.text ? "block" : "none"}">${htmlEscape(authBanner.text || "")}</div>
+        <div id="authBox" class="meta" style="margin-top:10px">Загрузка…</div>
+      </section>
+
+      <section class="card">
         <h2>Профиль</h2>
         <div class="kpi" style="margin-top:12px">
           <div class="tile">
@@ -540,9 +742,12 @@ function renderProfile() {
     </div>
   `;
 
+  // Вставляем/обновляем UI авторизации (асинхронно)
+  renderAuthCard();
+
   $("#reset").addEventListener("click", () => {
     if (!confirm("Сбросить XP, завершения и избранное?")) return;
-    state = { xp: 0, completed: {}, favorites: [], streak: { count: 0, lastDate: null } };
+    state = normalizeState({ xp: 0, completed: {}, favorites: [], streak: { count: 0, lastDate: null }, settings: state.settings });
     saveState();
     renderProfile();
   });
@@ -556,6 +761,176 @@ function renderProfile() {
       renderProfile();
     });
   });
+}
+
+async function renderAuthCard() {
+  const box = $("#authBox");
+  if (!box) return;
+
+  if (authBanner?.text) setAuthBanner(authBanner.type, authBanner.text);
+  else setAuthBanner(null, "");
+
+  if (!isSupabaseConfigured()) {
+    box.innerHTML = `
+      <div class="meta">
+        Supabase не настроен. Чтобы включить регистрацию/вход:
+      </div>
+      <ol class="meta" style="margin:8px 0 0; padding-left:18px; line-height:1.6">
+        <li>Создай проект в Supabase</li>
+        <li>Открой <b>Project Settings → API</b></li>
+        <li>В файле <b>supabaseConfig.js</b> заполни <b>SUPABASE_URL</b> и <b>SUPABASE_ANON_KEY</b></li>
+        <li>Создай таблицу <b>student_state</b> и включи RLS (SQL есть в README)</li>
+      </ol>
+    `;
+    return;
+  }
+
+  box.innerHTML = `<div class="meta">Подключаемся к Supabase…</div>`;
+  await initAuthOnce();
+  const client = await ensureSupabase();
+  if (!client) {
+    box.innerHTML = `<div class="alert bad">Не удалось загрузить Supabase SDK. Проверь интернет или блокировку CDN.</div>`;
+    return;
+  }
+
+  const lastSync = state.meta?.lastSyncAt
+    ? new Date(state.meta.lastSyncAt).toLocaleString("ru-RU")
+    : "—";
+
+  if (authUser) {
+    box.innerHTML = `
+      <div class="row" style="justify-content:space-between; align-items:flex-start">
+        <div>
+          <div class="badge good">Вход выполнен</div>
+          <div style="margin-top:8px">
+            <div><b>${htmlEscape(authUser.email || "")}</b></div>
+            <div class="meta" style="margin-top:4px">Последняя синхронизация: ${htmlEscape(lastSync)}</div>
+          </div>
+        </div>
+        <button id="btnSignOut" class="btn secondary" type="button">Выйти</button>
+      </div>
+
+      <div class="form">
+        <label class="toggle">
+          <input id="syncToggle" type="checkbox" ${state.settings?.sync ? "checked" : ""} />
+          <span>Синхронизация прогресса (XP, завершения, избранное)</span>
+        </label>
+
+        <div class="actions">
+          <button id="btnSyncNow" class="btn" type="button">Синхронизировать сейчас</button>
+          <span class="meta">Если отключить — прогресс будет храниться только на устройстве.</span>
+        </div>
+      </div>
+    `;
+
+    $("#btnSignOut").addEventListener("click", async () => {
+      try {
+        await client.auth.signOut();
+        setAuthBanner(null, "");
+      } catch (e) {
+        console.error(e);
+        setAuthBanner("bad", "Не удалось выйти. Попробуй ещё раз.");
+      }
+    });
+
+    $("#btnSyncNow").addEventListener("click", async () => {
+      setAuthBanner(null, "");
+      await syncNow();
+      setAuthBanner("good", "Синхронизация выполнена.");
+      renderProfile();
+    });
+
+    $("#syncToggle").addEventListener("change", (e) => {
+      state.settings = state.settings || { sync: true };
+      state.settings.sync = Boolean(e.target.checked);
+      saveState({ skipSync: true });
+      if (state.settings.sync) queueSync(true);
+    });
+
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="meta">Войди или зарегистрируйся (email + пароль).</div>
+    <div class="form" style="max-width:520px">
+      <div class="field">
+        <label for="authEmail">Email</label>
+        <input id="authEmail" type="email" autocomplete="email" placeholder="name@example.com" />
+      </div>
+      <div class="field">
+        <label for="authPass">Пароль</label>
+        <input id="authPass" type="password" autocomplete="current-password" placeholder="минимум 6 символов" />
+      </div>
+      <div class="actions">
+        <button id="btnSignIn" class="btn" type="button">Войти</button>
+        <button id="btnSignUp" class="btn secondary" type="button">Регистрация</button>
+        <span class="meta">Если включено подтверждение email — после регистрации проверь почту.</span>
+      </div>
+    </div>
+  `;
+
+  const emailEl = $("#authEmail");
+  const passEl = $("#authPass");
+  const btnIn = $("#btnSignIn");
+  const btnUp = $("#btnSignUp");
+
+  function getCreds() {
+    const email = (emailEl.value || "").trim();
+    const password = passEl.value || "";
+    return { email, password };
+  }
+
+  async function withBusy(fn) {
+    btnIn.disabled = true;
+    btnUp.disabled = true;
+    try {
+      await fn();
+    } finally {
+      btnIn.disabled = false;
+      btnUp.disabled = false;
+    }
+  }
+
+  btnIn.addEventListener("click", () => withBusy(async () => {
+    setAuthBanner(null, "");
+    const { email, password } = getCreds();
+    if (!email || password.length < 6) {
+      setAuthBanner("bad", "Укажи email и пароль (минимум 6 символов).");
+      return;
+    }
+    const { error } = await client.auth.signInWithPassword({ email, password });
+    if (error) {
+      setAuthBanner("bad", error.message || "Ошибка входа");
+      return;
+    }
+    setAuthBanner("good", "Вход выполнен.");
+    await reconcileStateAfterLogin();
+    renderProfile();
+  }));
+
+  btnUp.addEventListener("click", () => withBusy(async () => {
+    setAuthBanner(null, "");
+    const { email, password } = getCreds();
+    if (!email || password.length < 6) {
+      setAuthBanner("bad", "Укажи email и пароль (минимум 6 символов).");
+      return;
+    }
+
+    const { data, error } = await client.auth.signUp({ email, password });
+    if (error) {
+      setAuthBanner("bad", error.message || "Ошибка регистрации");
+      return;
+    }
+
+    if (!data?.session) {
+      setAuthBanner("good", "Регистрация успешна. Подтверди email в письме и затем войди.");
+      return;
+    }
+
+    setAuthBanner("good", "Регистрация успешна. Выполнен вход.");
+    await reconcileStateAfterLogin();
+    renderProfile();
+  }));
 }
 
 function renderAbout() {
