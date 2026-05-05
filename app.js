@@ -1,4 +1,4 @@
-import { modules, phrasesById, getModuleById, phrases } from "./data.js";
+import { loadContent } from "./contentService.js";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabaseClient.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -6,12 +6,78 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const STORAGE_KEY = "phraseofun_state_v1";
 
+let content = {
+  modules: [],
+  phrases: [],
+  phrasesById: {},
+  moduleById: {},
+};
+
+let state = normalizeState(loadState());
+let sb = null;
+let authUser = null;
+let authInitDone = false;
+let authInitPromise = null;
+let authBanner = { type: null, text: "" };
+let syncTimer = null;
+let isAdminUser = false;
+
+const adminState = {
+  selectedModuleId: null,
+  selectedPhraseId: null,
+};
+
 function todayISO() {
   const d = new Date();
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function uniq(arr) {
+  return Array.from(new Set(arr));
+}
+
+function xpToLevel(xp) {
+  return Math.floor(Math.sqrt(xp / 50)) + 1;
+}
+
+function htmlEscape(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[c]));
+}
+
+function isIOS() {
+  return (
+    /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isStandalone() {
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    window.navigator.standalone === true
+  );
 }
 
 function loadState() {
@@ -22,7 +88,7 @@ function loadState() {
     return {
       xp: Number(st.xp || 0),
       completed: st.completed || {},
-      favorites: st.favorites || [],
+      favorites: Array.isArray(st.favorites) ? st.favorites : [],
       streak: st.streak || { count: 0, lastDate: null },
       settings: st.settings || { sync: true },
       meta: st.meta || { updatedAt: 0, lastSyncAt: null },
@@ -39,64 +105,6 @@ function loadState() {
   }
 }
 
-function saveState({ skipSync = false } = {}) {
-  state.meta = state.meta || { updatedAt: 0, lastSyncAt: null };
-  state.meta.updatedAt = Date.now();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  // $("#pill-xp").textContent = `XP: ${state.xp}`;
-  if (!skipSync) queueSync();
-}
-
-let state = normalizeState(loadState());
-saveState({ skipSync: true });
-
-function xpToLevel(xp) {
-  return Math.floor(Math.sqrt(xp / 50)) + 1;
-}
-
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function shuffle(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function uniq(arr) {
-  return Array.from(new Set(arr));
-}
-
-function setActiveNav(route) {
-  $$("#nav a").forEach(a => {
-    a.classList.toggle("active", a.dataset.route === route);
-  });
-}
-
-function htmlEscape(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function isIOS() {
-  return (
-    /iphone|ipad|ipod/i.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
-}
-
-function isStandalone() {
-  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-}
-
-/* ---------- Supabase auth + sync ---------- */
-let sb = null;
-let authUser = null;
-let authInitDone = false;
-let authInitPromise = null;
-let authBanner = { type: null, text: "" };
-let syncTimer = null;
-
 function normalizeState(st) {
   const base = {
     xp: 0,
@@ -106,6 +114,7 @@ function normalizeState(st) {
     settings: { sync: true },
     meta: { updatedAt: 0, lastSyncAt: null },
   };
+
   const s = Object.assign({}, base, st || {});
   s.xp = Number(s.xp || 0);
   s.completed = s.completed || {};
@@ -114,12 +123,51 @@ function normalizeState(st) {
   s.settings = s.settings || { sync: true };
   s.meta = s.meta || { updatedAt: 0, lastSyncAt: null };
   s.meta.updatedAt = Number(s.meta.updatedAt || 0);
+
   return s;
 }
+
+function saveState({ skipSync = false } = {}) {
+  state.meta = state.meta || { updatedAt: 0, lastSyncAt: null };
+  state.meta.updatedAt = Date.now();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (!skipSync) queueSync();
+}
+
+saveState({ skipSync: true });
+
+function setActiveNav(route) {
+  $$("#nav a").forEach((a) => {
+    a.classList.toggle("active", a.dataset.route === route);
+  });
+}
+
+function parseRoute() {
+  const hash = location.hash || "#/modules";
+  const parts = hash.replace(/^#\//, "").split("/").filter(Boolean);
+  const route = parts[0] || "modules";
+  const param = parts[1] || null;
+  return { route, param };
+}
+
+function renderNav() {
+  const nav = $("#nav");
+  if (!nav) return;
+
+  nav.innerHTML = `
+    <a href="#/modules" data-route="modules">Модули</a>
+    <a href="#/profile" data-route="profile">Профиль</a>
+    ${isAdminUser ? `<a href="#/admin" data-route="admin">Админ</a>` : ""}
+    ${isAdminUser ? `<a href="#/admin-users" data-route="admin-users">Пользователи</a>` : ""}
+  `;
+}
+
+/* ---------- Supabase auth + sync ---------- */
 
 async function ensureSupabase() {
   if (sb) return sb;
   if (!isSupabaseConfigured()) return null;
+
   try {
     sb = await getSupabaseClient();
     return sb;
@@ -130,12 +178,55 @@ async function ensureSupabase() {
   }
 }
 
+async function fetchAdminUsers() {
+  const client = await ensureSupabase();
+  if (!client) throw new Error("Supabase не настроен");
+
+  const { data: profiles, error: profilesError } = await client
+    .from("profiles")
+    .select("id, email, full_name, created_at")
+    .order("created_at", { ascending: false });
+
+  if (profilesError) throw profilesError;
+
+  const { data: roles, error: rolesError } = await client
+    .from("app_roles")
+    .select("user_id, role");
+
+  if (rolesError) throw rolesError;
+
+  const roleMap = new Map((roles || []).map((r) => [r.user_id, r.role]));
+
+  return (profiles || []).map((p) => ({
+    ...p,
+    role: roleMap.get(p.id) || "student",
+  }));
+}
+
+async function loadUserRole() {
+  isAdminUser = false;
+
+  const client = await ensureSupabase();
+  if (!client || !authUser) return;
+
+  const { data, error } = await client
+    .from("app_roles")
+    .select("role")
+    .eq("user_id", authUser.id)
+    .maybeSingle();
+
+  if (!error && data?.role === "admin") {
+    isAdminUser = true;
+  }
+}
+
 async function initAuthOnce() {
   if (authInitDone) return;
   if (authInitPromise) return authInitPromise;
 
   authInitPromise = (async () => {
     const client = await ensureSupabase();
+
     if (!client) {
       authInitDone = true;
       return;
@@ -144,14 +235,29 @@ async function initAuthOnce() {
     try {
       const { data } = await client.auth.getSession();
       authUser = data?.session?.user || null;
+      await loadUserRole();
     } catch (e) {
       console.error(e);
     }
 
     client.auth.onAuthStateChange((_event, session) => {
-      authUser = session?.user || null;
-      if (parseRoute().route === "profile") renderProfile();
-      if (authUser && state.settings?.sync) queueSync(true);
+      (async () => {
+        authUser = session?.user || null;
+        await loadUserRole();
+
+        if (authUser && state.settings?.sync) {
+          queueSync(true);
+        }
+
+        const currentRoute = parseRoute().route;
+
+        if (currentRoute === "admin" && !isAdminUser) {
+          location.hash = "#/profile";
+          return;
+        }
+
+        render();
+      })().catch(console.error);
     });
 
     authInitDone = true;
@@ -163,8 +269,9 @@ async function initAuthOnce() {
 
 function setAuthBanner(type, text) {
   authBanner = { type, text: text || "" };
+
   if (parseRoute().route === "profile") {
-    const el = document.querySelector("#authBanner");
+    const el = $("#authBanner");
     if (el) {
       el.className = `alert ${type || ""}`.trim();
       el.style.display = text ? "block" : "none";
@@ -178,6 +285,7 @@ function queueSync(immediate = false) {
   if (!authUser) return;
   if (!isSupabaseConfigured()) return;
   if (!navigator.onLine) return;
+
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     syncNow().catch(() => { });
@@ -187,6 +295,7 @@ function queueSync(immediate = false) {
 async function fetchRemoteState() {
   const client = await ensureSupabase();
   if (!client || !authUser) return null;
+
   const q = client
     .from("student_state")
     .select("state")
@@ -198,38 +307,49 @@ async function fetchRemoteState() {
   if (error) {
     const msg = String(error.message || "").toLowerCase();
     const code = String(error.code || "");
-    if (code === "PGRST116" || msg.includes("no rows") || msg.includes("0 rows")) return null;
+
+    if (code === "PGRST116" || msg.includes("no rows") || msg.includes("0 rows")) {
+      return null;
+    }
+
     throw error;
   }
+
   return data?.state || null;
 }
 
 async function pushRemoteState() {
   const client = await ensureSupabase();
   if (!client || !authUser) return;
+
   const payload = {
     user_id: authUser.id,
-    state: state,
+    state,
   };
+
   const { error } = await client
     .from("student_state")
     .upsert(payload, { onConflict: "user_id" });
 
   if (error) throw error;
+
   state.meta.lastSyncAt = new Date().toISOString();
   saveState({ skipSync: true });
 }
 
 async function reconcileStateAfterLogin() {
   let remote = null;
+
   try {
     remote = await fetchRemoteState();
   } catch (e) {
     console.error(e);
     setAuthBanner(
       "bad",
-      "Вход выполнен, но синхронизация недоступна: проверь таблицу student_state и RLS (см. README)."
+      "Вход выполнен, но синхронизация недоступна: проверь таблицу student_state и RLS."
     );
+    await loadUserRole();
+    render();
     return;
   }
 
@@ -237,10 +357,12 @@ async function reconcileStateAfterLogin() {
     const r = normalizeState(remote);
     const rUpd = Number(r.meta?.updatedAt || 0);
     const lUpd = Number(state.meta?.updatedAt || 0);
+
     if (rUpd > lUpd) {
       state = r;
       saveState({ skipSync: true });
       setAuthBanner("good", "Прогресс загружен из облака Supabase.");
+      await loadUserRole();
       render();
       return;
     }
@@ -253,54 +375,164 @@ async function reconcileStateAfterLogin() {
     console.error(e);
     setAuthBanner("bad", "Не удалось синхронизировать прогресс. Проверь настройки RLS.");
   }
+
+  await loadUserRole();
+  render();
 }
 
 async function syncNow() {
   if (!state.settings?.sync) return;
   if (!authUser) return;
   if (!navigator.onLine) return;
+
   try {
     await pushRemoteState();
-    if (parseRoute().route === "profile") renderProfile();
+
+    if (parseRoute().route === "profile") {
+      renderProfile();
+    }
   } catch (e) {
     console.error(e);
     setAuthBanner("bad", "Ошибка синхронизации. Проверь интернет и RLS.");
   }
 }
 
-/* ---------- PWA install + SW ---------- */
-let deferredPrompt = null;
-const installBtn = document.querySelector("#installBtn");
-const banner = document.querySelector("#top-banner");
+/* ---------- Admin helpers ---------- */
 
-if (isIOS() && !isStandalone()) {
-  installBtn.classList.add("show");
-
-  installBtn.addEventListener("click", () => {
-    banner.classList.add("show");
-  });
+function adminNotify(message) {
+  alert(message);
 }
 
-window.addEventListener("beforeinstallprompt", (e) => {
-  e.preventDefault();
-  console.log("Браузер готов к установке PWA");
-  deferredPrompt = e;
-  installBtn.classList.add("show");
-});
+function nextTextId(items, prefix, pad = 2) {
+  const maxNum = items.reduce((max, item) => {
+    const raw = String(item?.id ?? "");
+    const m = raw.match(new RegExp(`^${prefix}(\\d+)$`, "i"));
+    if (!m) return max;
+    return Math.max(max, Number(m[1]));
+  }, 0);
 
-installBtn.addEventListener("click", async () => {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt();
-  await deferredPrompt.userChoice;
-  deferredPrompt = null;
-  installBtn.classList.remove("show");
-});
+  return `${prefix}${String(maxNum + 1).padStart(pad, "0")}`;
+}
 
-window.addEventListener("appinstalled", () => {
-  deferredPrompt = null;
-  alert("Приложение установлено!");
-  installBtn.classList.remove("show");
-});
+async function reloadContentAndKeepAdminSelection() {
+  content = await loadContent();
+
+  if (
+    adminState.selectedModuleId &&
+    !content.moduleById[adminState.selectedModuleId]
+  ) {
+    adminState.selectedModuleId = content.modules[0]?.id ?? null;
+  }
+
+  if (
+    adminState.selectedPhraseId &&
+    !content.phrasesById[adminState.selectedPhraseId]
+  ) {
+    adminState.selectedPhraseId = content.phrases[0]?.id ?? null;
+  }
+}
+
+async function upsertModule(moduleData) {
+  const client = await ensureSupabase();
+  if (!client) throw new Error("Supabase не настроен");
+
+  const payload = {
+    id: String(moduleData.id).trim(),
+    title: String(moduleData.title).trim(),
+    grade: String(moduleData.grade).trim(),
+    level: String(moduleData.level).trim(),
+    context: String(moduleData.context || "").trim() || null,
+    sort_order: Number(moduleData.sort_order || 0),
+    is_published: Boolean(moduleData.is_published),
+  };
+
+  const { error } = await client
+    .from("modules")
+    .upsert(payload, { onConflict: "id" });
+
+  if (error) throw error;
+}
+
+async function upsertPhrase(phraseData) {
+  const client = await ensureSupabase();
+  if (!client) throw new Error("Supabase не настроен");
+
+  const payload = {
+    id: String(phraseData.id).trim(),
+    en: String(phraseData.en).trim(),
+    ru: String(phraseData.ru).trim(),
+    sort_order: Number(phraseData.sort_order || 0),
+    is_published: Boolean(phraseData.is_published),
+  };
+
+  const { error } = await client
+    .from("phrases")
+    .upsert(payload, { onConflict: "id" });
+
+  if (error) throw error;
+}
+
+async function replaceModulePhrases(moduleId, phraseIds) {
+  const client = await ensureSupabase();
+  if (!client) throw new Error("Supabase не настроен");
+
+  const { error: deleteError } = await client
+    .from("module_phrases")
+    .delete()
+    .eq("module_id", moduleId);
+
+  if (deleteError) throw deleteError;
+
+  const rows = phraseIds.map((phraseId, index) => ({
+    module_id: moduleId,
+    phrase_id: phraseId,
+    sort_order: index + 1,
+  }));
+
+  if (rows.length > 0) {
+    const { error: insertError } = await client
+      .from("module_phrases")
+      .insert(rows);
+
+    if (insertError) throw insertError;
+  }
+}
+
+/* ---------- PWA install + SW ---------- */
+
+let deferredPrompt = null;
+const installBtn = $("#installBtn");
+const banner = $("#top-banner");
+
+if (installBtn) {
+  if (isIOS() && !isStandalone()) {
+    installBtn.classList.add("show");
+
+    installBtn.addEventListener("click", () => {
+      if (banner) banner.classList.add("show");
+    });
+  }
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installBtn.classList.add("show");
+  });
+
+  installBtn.addEventListener("click", async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    installBtn.classList.remove("show");
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredPrompt = null;
+    installBtn.classList.remove("show");
+    alert("Приложение установлено!");
+  });
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
@@ -313,49 +545,65 @@ if ("serviceWorker" in navigator) {
 }
 
 /* ---------- Router ---------- */
-function parseRoute() {
-  const hash = location.hash || "#/modules";
-  const parts = hash.replace(/^#\//, "").split("/").filter(Boolean);
-  const route = parts[0] || "modules";
-  const param = parts[1] || null;
-  return { route, param };
-}
 
-window.addEventListener("hashchange", render);
-window.addEventListener("load", () => {
-  if (!location.hash) location.hash = "#/modules";
+window.addEventListener("hashchange", () => {
   render();
-
-  if (isSupabaseConfigured() && navigator.onLine) {
-    initAuthOnce().catch(() => { });
-  }
 });
 
+window.addEventListener("online", () => {
+  queueSync(true);
+});
+
+async function initApp() {
+  try {
+    content = await loadContent();
+  } catch (e) {
+    console.error("Не удалось загрузить контент:", e);
+  }
+
+  if (!location.hash) {
+    location.hash = "#/modules";
+  }
+
+  await initAuthOnce();
+  await loadUserRole();
+  render();
+}
+
+initApp();
+
 /* ---------- Views ---------- */
+
 function render() {
+  renderNav();
+
   const { route, param } = parseRoute();
+
   if (route === "modules") return renderModules();
   if (route === "module") return renderModule(param);
   if (route === "practice") return renderPractice(param);
   if (route === "profile") return renderProfile();
   if (route === "about") return renderAbout();
+  if (route === "admin") return renderAdmin();
+  if (route === "admin-users") return renderAdminUsers();
+
   renderNotFound();
 }
 
 function renderModules() {
   setActiveNav("modules");
+
   const app = $("#app");
-  const grades = uniq(modules.map(m => m.grade).filter(Boolean));
-  const levels = uniq(modules.map(m => m.level).filter(Boolean));
+  if (!app) return;
+
+  const levels = uniq(content.modules.map((m) => m.level).filter(Boolean));
 
   app.innerHTML = `
     <div class="grid">
       <section class="card">
         <div class="stats">
-          <!-- Модули -->
           <div class="stat">
             <div class="stat-icon">
-              <!-- document.svg (inline) -->
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                   stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 3h6l4 4v14H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>
@@ -364,28 +612,24 @@ function renderModules() {
                 <path d="M9 16h6"/>
               </svg>
             </div>
-            <div class="stat-text">${modules.length}</div>
+            <div class="stat-text">${content.modules.length}</div>
             <div class="stat-text">Модулей</div>
           </div>
 
-          <!-- Фразы -->
           <div class="stat">
             <div class="stat-icon">
-              <!-- quotes.svg (inline) -->
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                   stroke-linecap="round" stroke-linejoin="round">
                 <path d="M7 17H5a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h4v8a3 3 0 0 1-2 3z"/>
                 <path d="M21 17h-2a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h4v8a3 3 0 0 1-2 3z"/>
               </svg>
             </div>
-            <div class="stat-text">${phrases.length}</div>
+            <div class="stat-text">${content.phrases.length}</div>
             <div class="stat-text">Фраз</div>
           </div>
 
-          <!-- Уровни -->
           <div class="stat">
             <div class="stat-icon">
-              <!-- star.svg (inline) -->
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                   stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 2l3.1 6.5 7.2 1-5.2 5 1.3 7.1L12 18.8 5.6 21.6l1.3-7.1-5.2-5 7.2-1L12 2z"/>
@@ -401,7 +645,7 @@ function renderModules() {
           <div class="select-wrap">
             <select id="level" class="select">
               <option value="">Все уровни</option>
-              ${levels.map(l => `<option value="${htmlEscape(l)}">${htmlEscape(l)}</option>`).join("")}
+              ${levels.map((l) => `<option value="${htmlEscape(l)}">${htmlEscape(l)}</option>`).join("")}
             </select>
           </div>
         </div>
@@ -414,27 +658,25 @@ function renderModules() {
   `;
 
   const q = $("#q");
-  const gradeSel = $("#grade");
   const levelSel = $("#level");
   const list = $("#list");
 
   function renderList() {
-    const term = q.value.trim().toLowerCase();
-    // const g = gradeSel.value;
-    const l = levelSel.value;
+    const term = (q?.value || "").trim().toLowerCase();
+    const l = levelSel?.value || "";
 
-    const filtered = modules.filter(m => {
-      // if (g && m.grade !== g) return false;
+    const filtered = content.modules.filter((m) => {
       if (l && m.level !== l) return false;
-      if (term && !m.title.toLowerCase().includes(term)) return false;
+      if (term && !String(m.title || "").toLowerCase().includes(term)) return false;
       return true;
     });
 
-    list.innerHTML = filtered.map(m => {
+    list.innerHTML = filtered.map((m) => {
       const done = state.completed[m.id]?.done ? true : false;
       const best = state.completed[m.id]?.best ?? 0;
       const pct = clamp(best, 0, 100);
       const bar = `<div class="progress" title="Лучший результат: ${pct}%"><div style="width:${pct}%"></div></div>`;
+
       return `
         <div class="module">
           <div>
@@ -455,16 +697,20 @@ function renderModules() {
     }).join("") || `<div class="meta">Ничего не найдено.</div>`;
   }
 
-  q.addEventListener("input", renderList);
-  // gradeSel.addEventListener("change", renderList);
-  levelSel.addEventListener("change", renderList);
+  q?.addEventListener("input", renderList);
+  levelSel?.addEventListener("change", renderList);
+
   renderList();
 }
 
 function renderModule(id) {
   setActiveNav("modules");
+
   const app = $("#app");
-  const m = getModuleById(id);
+  if (!app) return;
+
+  const m = content.moduleById[id];
+
   if (!m) {
     app.innerHTML = `<div class="card"><h2>Модуль не найден</h2><a class="btn" href="#/modules">Назад</a></div>`;
     return;
@@ -473,10 +719,12 @@ function renderModule(id) {
   const done = state.completed[m.id]?.done ? true : false;
   const best = state.completed[m.id]?.best ?? 0;
 
-  const phraseCards = m.phraseIds.map(pid => {
-    const p = phrasesById[pid];
+  const phraseCards = (m.phraseIds || []).map((pid) => {
+    const p = content.phrasesById[pid];
     if (!p) return "";
+
     const fav = state.favorites.includes(pid);
+
     return `
       <div class="phrase">
         <div style="flex:1">
@@ -510,12 +758,14 @@ function renderModule(id) {
     </div>
   `;
 
-  $$(".star").forEach(el => {
+  $$(".star").forEach((el) => {
     el.addEventListener("click", () => {
       const pid = el.dataset.id;
       const idx = state.favorites.indexOf(pid);
+
       if (idx >= 0) state.favorites.splice(idx, 1);
       else state.favorites.push(pid);
+
       saveState();
       el.classList.toggle("on");
       el.textContent = el.classList.contains("on") ? "★" : "☆";
@@ -525,32 +775,45 @@ function renderModule(id) {
 
 function renderPractice(id) {
   setActiveNav("modules");
+
   const app = $("#app");
-  const m = getModuleById(id);
+  if (!app) return;
+
+  const m = content.moduleById[id];
+
   if (!m) {
     app.innerHTML = `<div class="card"><h2>Модуль не найден</h2><a class="btn" href="#/modules">Назад</a></div>`;
     return;
   }
 
-  const pool = m.phraseIds.filter(pid => phrasesById[pid]);
+  const pool = (m.phraseIds || []).filter((pid) => content.phrasesById[pid]);
   const take = shuffle(pool).slice(0, Math.min(10, pool.length));
+
   if (take.length < 4) {
     app.innerHTML = `
       <div class="card">
         <a class="btn secondary" href="#/module/${m.id}">← Назад</a>
         <h2 style="margin-top:12px">Практика</h2>
         <div class="meta">Недостаточно фраз для квиза (нужно хотя бы 4).</div>
-      </div>`;
+      </div>
+    `;
     return;
   }
 
-  const allRu = phrases.map(p => p.ru).filter(Boolean);
-  const questions = take.map(pid => {
-    const p = phrasesById[pid];
+  const allRu = content.phrases.map((p) => p.ru).filter(Boolean);
+
+  const questions = take.map((pid) => {
+    const p = content.phrasesById[pid];
     const correct = p.ru || "";
-    const distractors = shuffle(allRu.filter(x => x && x !== correct)).slice(0, 3);
+    const distractors = shuffle(allRu.filter((x) => x && x !== correct)).slice(0, 3);
     const options = shuffle([correct, ...distractors]);
-    return { pid, prompt: p.en, correct, options };
+
+    return {
+      pid,
+      prompt: p.en,
+      correct,
+      options,
+    };
   });
 
   let idx = 0;
@@ -560,6 +823,7 @@ function renderPractice(id) {
   function renderQ() {
     const q = questions[idx];
     const progress = `${idx + 1} / ${questions.length}`;
+
     app.innerHTML = `
       <div class="grid">
         <section class="card">
@@ -577,7 +841,8 @@ function renderPractice(id) {
                 <div class="option" data-opt="${htmlEscape(opt)}">
                   <div class="badge">${String.fromCharCode(65 + i)}</div>
                   <div>${htmlEscape(opt || "—")}</div>
-                </div>`).join("")}
+                </div>
+              `).join("")}
             </div>
             <div class="row" style="margin-top:8px">
               <span class="meta">Правильных: ${correctCount}</span>
@@ -589,21 +854,23 @@ function renderPractice(id) {
       </div>
     `;
 
-
-    $("#skip").addEventListener("click", () => {
+    $("#skip")?.addEventListener("click", () => {
       if (locked) return;
       next();
     });
 
-    $$(".option").forEach(el => {
+    $$(".option").forEach((el) => {
       el.addEventListener("click", () => {
         if (locked) return;
+
         locked = true;
+
         const picked = el.dataset.opt || "";
         const isRight = picked === q.correct;
+
         if (isRight) correctCount++;
 
-        $$(".option").forEach(o => {
+        $$(".option").forEach((o) => {
           const opt = o.dataset.opt || "";
           if (opt === q.correct) o.classList.add("correct");
           if (opt === picked && !isRight) o.classList.add("wrong");
@@ -617,6 +884,7 @@ function renderPractice(id) {
   function next() {
     locked = false;
     idx++;
+
     if (idx >= questions.length) {
       finish();
     } else {
@@ -629,14 +897,17 @@ function renderPractice(id) {
     const earned = correctCount * 10;
 
     const t = todayISO();
+
     if (state.streak.lastDate === t) {
-      // ничего не делаем
+      // nothing
     } else {
       const last = state.streak.lastDate ? new Date(state.streak.lastDate) : null;
       const now = new Date(t);
       const diffDays = last ? Math.round((now - last) / (24 * 3600 * 1000)) : 999;
+
       if (diffDays === 1) state.streak.count = (state.streak.count || 0) + 1;
       else state.streak.count = 1;
+
       state.streak.lastDate = t;
     }
 
@@ -645,8 +916,9 @@ function renderPractice(id) {
       done: score >= 70,
       best: Math.max(state.completed[m.id]?.best ?? 0, score),
       lastScore: score,
-      lastAt: Date.now()
+      lastAt: Date.now(),
     };
+
     saveState();
 
     app.innerHTML = `
@@ -685,28 +957,30 @@ function renderPractice(id) {
 
 function renderProfile() {
   setActiveNav("profile");
+
   const app = $("#app");
+  if (!app) return;
+
   const level = xpToLevel(state.xp);
-  const doneCount = Object.values(state.completed).filter(x => x?.done).length;
-  const total = modules.length;
+  const doneCount = Object.values(state.completed).filter((x) => x?.done).length;
+  const total = content.modules.length;
   const favCount = state.favorites.length;
 
-  const favPhrases = state.favorites.slice(0, 12).map(pid => {
-    const p = phrasesById[pid];
+  const favPhrases = state.favorites.slice(0, 12).map((pid) => {
+    const p = content.phrasesById[pid];
     if (!p) return "";
-    return `<div class="phrase">
-      <div style="flex:1">
-        <div class="en">${htmlEscape(p.en)}</div>
-        <div class="ru">${htmlEscape(p.ru || "—")}</div>
+
+    return `
+      <div class="phrase">
+        <div style="flex:1">
+          <div class="en">${htmlEscape(p.en)}</div>
+          <div class="ru">${htmlEscape(p.ru || "—")}</div>
+        </div>
+        <div class="star on" data-id="${pid}">★</div>
       </div>
-      <div class="star on" data-id="${pid}">★</div>
-    </div>`;
+    `;
   }).join("");
 
-  // <div class="tile">
-  //   <div class="meta">Стрик</div>
-  //   <div class="num">${state.streak.count} 🔥</div>
-  // </div>
   app.innerHTML = `
     <div class="grid">
       <section class="card">
@@ -742,21 +1016,30 @@ function renderProfile() {
     </div>
   `;
 
-  // Вставляем/обновляем UI авторизации (асинхронно)
   renderAuthCard();
 
-  $("#reset").addEventListener("click", () => {
+  $("#reset")?.addEventListener("click", () => {
     if (!confirm("Сбросить XP, завершения и избранное?")) return;
-    state = normalizeState({ xp: 0, completed: {}, favorites: [], streak: { count: 0, lastDate: null }, settings: state.settings });
+
+    state = normalizeState({
+      xp: 0,
+      completed: {},
+      favorites: [],
+      streak: { count: 0, lastDate: null },
+      settings: state.settings,
+    });
+
     saveState();
     renderProfile();
   });
 
-  $$(".star.on").forEach(el => {
+  $$(".star.on").forEach((el) => {
     el.addEventListener("click", () => {
       const pid = el.dataset.id;
       const idx = state.favorites.indexOf(pid);
+
       if (idx >= 0) state.favorites.splice(idx, 1);
+
       saveState();
       renderProfile();
     });
@@ -779,17 +1062,19 @@ async function renderAuthCard() {
         <li>Создай проект в Supabase</li>
         <li>Открой <b>Project Settings → API</b></li>
         <li>В файле <b>supabaseConfig.js</b> заполни <b>SUPABASE_URL</b> и <b>SUPABASE_ANON_KEY</b></li>
-        <li>Создай таблицу <b>student_state</b> и включи RLS (SQL есть в README)</li>
+        <li>Создай таблицу <b>student_state</b> и включи RLS</li>
       </ol>
     `;
     return;
   }
 
   box.innerHTML = `<div class="meta">Подключаемся к Supabase…</div>`;
+
   await initAuthOnce();
+
   const client = await ensureSupabase();
   if (!client) {
-    box.innerHTML = `<div class="alert bad">Не удалось загрузить Supabase SDK. Проверь интернет или блокировку CDN.</div>`;
+    box.innerHTML = `<div class="alert bad">Не удалось загрузить Supabase SDK. Проверь интернет или CDN.</div>`;
     return;
   }
 
@@ -823,7 +1108,7 @@ async function renderAuthCard() {
       </div>
     `;
 
-    $("#btnSignOut").addEventListener("click", async () => {
+    $("#btnSignOut")?.addEventListener("click", async () => {
       try {
         await client.auth.signOut();
         setAuthBanner(null, "");
@@ -833,18 +1118,21 @@ async function renderAuthCard() {
       }
     });
 
-    $("#btnSyncNow").addEventListener("click", async () => {
+    $("#btnSyncNow")?.addEventListener("click", async () => {
       setAuthBanner(null, "");
       await syncNow();
       setAuthBanner("good", "Синхронизация выполнена.");
       renderProfile();
     });
 
-    $("#syncToggle").addEventListener("change", (e) => {
+    $("#syncToggle")?.addEventListener("change", (e) => {
       state.settings = state.settings || { sync: true };
       state.settings.sync = Boolean(e.target.checked);
       saveState({ skipSync: true });
-      if (state.settings.sync) queueSync(true);
+
+      if (state.settings.sync) {
+        queueSync(true);
+      }
     });
 
     return;
@@ -875,41 +1163,48 @@ async function renderAuthCard() {
   const btnUp = $("#btnSignUp");
 
   function getCreds() {
-    const email = (emailEl.value || "").trim();
-    const password = passEl.value || "";
-    return { email, password };
+    return {
+      email: (emailEl?.value || "").trim(),
+      password: passEl?.value || "",
+    };
   }
 
   async function withBusy(fn) {
-    btnIn.disabled = true;
-    btnUp.disabled = true;
+    if (btnIn) btnIn.disabled = true;
+    if (btnUp) btnUp.disabled = true;
+
     try {
       await fn();
     } finally {
-      btnIn.disabled = false;
-      btnUp.disabled = false;
+      if (btnIn) btnIn.disabled = false;
+      if (btnUp) btnUp.disabled = false;
     }
   }
 
-  btnIn.addEventListener("click", () => withBusy(async () => {
+  btnIn?.addEventListener("click", () => withBusy(async () => {
     setAuthBanner(null, "");
+
     const { email, password } = getCreds();
     if (!email || password.length < 6) {
       setAuthBanner("bad", "Укажи email и пароль (минимум 6 символов).");
       return;
     }
+
     const { error } = await client.auth.signInWithPassword({ email, password });
+
     if (error) {
       setAuthBanner("bad", error.message || "Ошибка входа");
       return;
     }
+
     setAuthBanner("good", "Вход выполнен.");
     await reconcileStateAfterLogin();
     renderProfile();
   }));
 
-  btnUp.addEventListener("click", () => withBusy(async () => {
+  btnUp?.addEventListener("click", () => withBusy(async () => {
     setAuthBanner(null, "");
+
     const { email, password } = getCreds();
     if (!email || password.length < 6) {
       setAuthBanner("bad", "Укажи email и пароль (минимум 6 символов).");
@@ -917,6 +1212,7 @@ async function renderAuthCard() {
     }
 
     const { data, error } = await client.auth.signUp({ email, password });
+
     if (error) {
       setAuthBanner("bad", error.message || "Ошибка регистрации");
       return;
@@ -935,18 +1231,22 @@ async function renderAuthCard() {
 
 function renderAbout() {
   setActiveNav("about");
+
   const app = $("#app");
+  if (!app) return;
+
   app.innerHTML = `
     <div class="grid">
       <section class="card">
         <h2>О проекте</h2>
         <div class="meta">
-          Это чистый PWA на HTML/CSS/JavaScript (без Expo и без фреймворков).
-          Прогресс хранится в localStorage. Приложение работает офлайн благодаря service worker.
+          Это чистый PWA на HTML/CSS/JavaScript.
+          Прогресс хранится в localStorage и при желании синхронизируется через Supabase.
+          Контент модулей и фраз тоже загружается из Supabase.
         </div>
         <div class="row" style="margin-top:12px">
-          <span class="badge">Контент: ${modules.length} модулей</span>
-          <span class="badge">Фразы: ${phrases.length}</span>
+          <span class="badge">Контент: ${content.modules.length} модулей</span>
+          <span class="badge">Фразы: ${content.phrases.length}</span>
           <span style="margin-left:auto"></span>
           <a class="btn" href="#/modules">Начать</a>
         </div>
@@ -958,7 +1258,537 @@ function renderAbout() {
   `;
 }
 
+function renderAdmin() {
+  setActiveNav("admin");
+
+  const app = $("#app");
+  if (!app) return;
+
+  if (!isAdminUser) {
+    app.innerHTML = `
+      <section class="card">
+        <h2>Доступ запрещён</h2>
+        <p>Эта страница доступна только администратору.</p>
+        <a class="btn" href="#/modules">К модулям</a>
+      </section>
+    `;
+    return;
+  }
+
+  const allModules = [...content.modules].sort(
+    (a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
+  );
+  const allPhrases = [...content.phrases].sort(
+    (a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
+  );
+
+  if (!adminState.selectedModuleId) {
+    adminState.selectedModuleId = allModules[0]?.id ?? null;
+  }
+
+  if (!adminState.selectedPhraseId) {
+    adminState.selectedPhraseId = allPhrases[0]?.id ?? null;
+  }
+
+  const selectedModule = content.moduleById[adminState.selectedModuleId] ?? null;
+  const selectedPhrase = content.phrasesById[adminState.selectedPhraseId] ?? null;
+  const selectedModulePhraseIds = new Set(selectedModule?.phraseIds || []);
+
+  app.innerHTML = `
+    <section class="grid">
+      <section class="card">
+        <h1>Панель администратора</h1>
+        <div class="meta">Управление учебными материалами: модули, фразы и состав модулей.</div>
+      </section>
+
+      <section class="card">
+        <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h2 style="margin:0;">Модули</h2>
+          <div class="row" style="gap:8px;">
+            <button class="btn secondary" type="button" id="admin-new-module-btn">Новый модуль</button>
+            <button class="btn" type="button" id="admin-refresh-btn">Обновить</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="admin-module-select">Выбери модуль</label>
+          <select id="admin-module-select">
+            ${allModules.length
+      ? allModules
+        .map(
+          (m) => `
+                        <option value="${htmlEscape(m.id)}" ${adminState.selectedModuleId === m.id ? "selected" : ""}>
+                          ${htmlEscape(m.id)} — ${htmlEscape(m.title)}
+                        </option>
+                      `
+        )
+        .join("")
+      : `<option value="">Нет модулей</option>`
+    }
+          </select>
+        </div>
+
+        <form id="admin-module-form" class="form" style="margin-top:12px;">
+          <div class="field">
+            <label for="admin-module-id">ID</label>
+            <input id="admin-module-id" name="id" value="${htmlEscape(selectedModule?.id || "")}" placeholder="m01" />
+          </div>
+
+          <div class="field">
+            <label for="admin-module-title">Название</label>
+            <input id="admin-module-title" name="title" value="${htmlEscape(selectedModule?.title || "")}" placeholder="School Life" />
+          </div>
+
+          <div class="row" style="gap:10px; flex-wrap:wrap;">
+            <div class="field" style="flex:1; min-width:160px;">
+              <label for="admin-module-grade">Класс</label>
+              <input id="admin-module-grade" name="grade" value="${htmlEscape(selectedModule?.grade || "")}" placeholder="5–6" />
+            </div>
+
+            <div class="field" style="flex:1; min-width:160px;">
+              <label for="admin-module-level">Уровень</label>
+              <input id="admin-module-level" name="level" value="${htmlEscape(selectedModule?.level || "")}" placeholder="Beginner" />
+            </div>
+
+            <div class="field" style="flex:1; min-width:160px;">
+              <label for="admin-module-sort">Порядок</label>
+              <input id="admin-module-sort" name="sort_order" type="number" value="${htmlEscape(selectedModule?.sort_order ?? 0)}" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="admin-module-context">Описание</label>
+            <textarea id="admin-module-context" name="context" rows="4" placeholder="Краткое описание модуля">${htmlEscape(selectedModule?.context || "")}</textarea>
+          </div>
+
+          <label class="toggle">
+            <input id="admin-module-published" name="is_published" type="checkbox" ${selectedModule?.is_published !== false ? "checked" : ""} />
+            <span>Опубликован</span>
+          </label>
+
+          <div class="actions">
+            <button class="btn" type="submit">Сохранить модуль</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h2 style="margin:0;">Фразы</h2>
+          <button class="btn secondary" type="button" id="admin-new-phrase-btn">Новая фраза</button>
+        </div>
+
+        <div class="field">
+          <label for="admin-phrase-select">Выбери фразу</label>
+          <select id="admin-phrase-select">
+            ${allPhrases.length
+      ? allPhrases
+        .map(
+          (p) => `
+                        <option value="${htmlEscape(p.id)}" ${adminState.selectedPhraseId === p.id ? "selected" : ""}>
+                          ${htmlEscape(p.id)} — ${htmlEscape(p.en)}
+                        </option>
+                      `
+        )
+        .join("")
+      : `<option value="">Нет фраз</option>`
+    }
+          </select>
+        </div>
+
+        <form id="admin-phrase-form" class="form" style="margin-top:12px;">
+          <div class="field">
+            <label for="admin-phrase-id">ID</label>
+            <input id="admin-phrase-id" name="id" value="${htmlEscape(selectedPhrase?.id || "")}" placeholder="p0001" />
+          </div>
+
+          <div class="field">
+            <label for="admin-phrase-en">English</label>
+            <input id="admin-phrase-en" name="en" value="${htmlEscape(selectedPhrase?.en || "")}" placeholder="How are you?" />
+          </div>
+
+          <div class="field">
+            <label for="admin-phrase-ru">Русский перевод</label>
+            <input id="admin-phrase-ru" name="ru" value="${htmlEscape(selectedPhrase?.ru || "")}" placeholder="Как дела?" />
+          </div>
+
+          <div class="row" style="gap:10px; flex-wrap:wrap;">
+            <div class="field" style="flex:1; min-width:160px;">
+              <label for="admin-phrase-sort">Порядок</label>
+              <input id="admin-phrase-sort" name="sort_order" type="number" value="${htmlEscape(selectedPhrase?.sort_order ?? 0)}" />
+            </div>
+
+            <label class="toggle" style="margin-top:28px;">
+              <input id="admin-phrase-published" name="is_published" type="checkbox" ${selectedPhrase?.is_published !== false ? "checked" : ""} />
+              <span>Опубликована</span>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button class="btn" type="submit">Сохранить фразу</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Фразы в модуле</h2>
+
+        ${selectedModule
+      ? `
+              <div class="meta" style="margin-bottom:12px;">
+                Модуль: <b>${htmlEscape(selectedModule.title)}</b>
+              </div>
+
+              <form id="admin-module-phrases-form">
+                <div style="display:grid; gap:8px; max-height:420px; overflow:auto;">
+                  ${allPhrases
+        .map(
+          (p) => `
+                        <label style="display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid rgba(0,0,0,.08); padding:10px; border-radius:10px;">
+                          <input
+                            type="checkbox"
+                            name="phrase_ids"
+                            value="${htmlEscape(p.id)}"
+                            ${selectedModulePhraseIds.has(p.id) ? "checked" : ""}
+                          />
+                          <div>
+                            <div><b>${htmlEscape(p.en)}</b></div>
+                            <div class="meta">${htmlEscape(p.ru)}</div>
+                          </div>
+                          <div class="meta">${htmlEscape(p.id)}</div>
+                        </label>
+                      `
+        )
+        .join("")}
+                </div>
+
+                <div class="actions" style="margin-top:14px;">
+                  <button class="btn" type="submit">Сохранить состав модуля</button>
+                </div>
+              </form>
+            `
+      : `<div class="meta">Сначала создай или выбери модуль.</div>`
+    }
+      </section>
+    </section>
+  `;
+
+  $("#admin-refresh-btn")?.addEventListener("click", async () => {
+    try {
+      await reloadContentAndKeepAdminSelection();
+      renderAdmin();
+    } catch (error) {
+      console.error(error);
+      adminNotify(`Ошибка обновления: ${error.message || error}`);
+    }
+  });
+
+  $("#admin-module-select")?.addEventListener("change", (e) => {
+    adminState.selectedModuleId = e.target.value || null;
+    renderAdmin();
+  });
+
+  $("#admin-phrase-select")?.addEventListener("change", (e) => {
+    adminState.selectedPhraseId = e.target.value || null;
+    renderAdmin();
+  });
+
+  $("#admin-new-module-btn")?.addEventListener("click", () => {
+    adminState.selectedModuleId = null;
+
+    const idInput = $("#admin-module-id");
+    const titleInput = $("#admin-module-title");
+    const gradeInput = $("#admin-module-grade");
+    const levelInput = $("#admin-module-level");
+    const sortInput = $("#admin-module-sort");
+    const contextInput = $("#admin-module-context");
+    const publishedInput = $("#admin-module-published");
+
+    if (idInput) idInput.value = nextTextId(content.modules, "m", 2);
+    if (titleInput) titleInput.value = "";
+    if (gradeInput) gradeInput.value = "";
+    if (levelInput) levelInput.value = "";
+    if (sortInput) sortInput.value = String(content.modules.length + 1);
+    if (contextInput) contextInput.value = "";
+    if (publishedInput) publishedInput.checked = true;
+  });
+
+  $("#admin-new-phrase-btn")?.addEventListener("click", () => {
+    adminState.selectedPhraseId = null;
+
+    const idInput = $("#admin-phrase-id");
+    const enInput = $("#admin-phrase-en");
+    const ruInput = $("#admin-phrase-ru");
+    const sortInput = $("#admin-phrase-sort");
+    const publishedInput = $("#admin-phrase-published");
+
+    if (idInput) idInput.value = nextTextId(content.phrases, "p", 4);
+    if (enInput) enInput.value = "";
+    if (ruInput) ruInput.value = "";
+    if (sortInput) sortInput.value = String(content.phrases.length + 1);
+    if (publishedInput) publishedInput.checked = true;
+  });
+
+  $("#admin-module-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+
+    const data = {
+      id: String(fd.get("id") || "").trim(),
+      title: String(fd.get("title") || "").trim(),
+      grade: String(fd.get("grade") || "").trim(),
+      level: String(fd.get("level") || "").trim(),
+      context: String(fd.get("context") || "").trim(),
+      sort_order: Number(fd.get("sort_order") || 0),
+      is_published: Boolean($("#admin-module-published")?.checked),
+    };
+
+    if (!data.id || !data.title || !data.grade || !data.level) {
+      adminNotify("Заполни обязательные поля модуля");
+      return;
+    }
+
+    try {
+      await upsertModule(data);
+      adminState.selectedModuleId = data.id;
+      await reloadContentAndKeepAdminSelection();
+      renderAdmin();
+      adminNotify("Модуль сохранён");
+    } catch (error) {
+      console.error(error);
+      adminNotify(`Ошибка сохранения модуля: ${error.message || error}`);
+    }
+  });
+
+  $("#admin-phrase-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+
+    const data = {
+      id: String(fd.get("id") || "").trim(),
+      en: String(fd.get("en") || "").trim(),
+      ru: String(fd.get("ru") || "").trim(),
+      sort_order: Number(fd.get("sort_order") || 0),
+      is_published: Boolean($("#admin-phrase-published")?.checked),
+    };
+
+    if (!data.id || !data.en || !data.ru) {
+      adminNotify("Заполни обязательные поля фразы");
+      return;
+    }
+
+    try {
+      await upsertPhrase(data);
+      adminState.selectedPhraseId = data.id;
+      await reloadContentAndKeepAdminSelection();
+      renderAdmin();
+      adminNotify("Фраза сохранена");
+    } catch (error) {
+      console.error(error);
+      adminNotify(`Ошибка сохранения фразы: ${error.message || error}`);
+    }
+  });
+
+  $("#admin-module-phrases-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    if (!adminState.selectedModuleId) {
+      adminNotify("Сначала выбери модуль");
+      return;
+    }
+
+    const checked = $$('input[name="phrase_ids"]:checked').map((el) => el.value);
+
+    try {
+      await replaceModulePhrases(adminState.selectedModuleId, checked);
+      await reloadContentAndKeepAdminSelection();
+      renderAdmin();
+      adminNotify("Состав модуля сохранён");
+    } catch (error) {
+      console.error(error);
+      adminNotify(`Ошибка сохранения состава модуля: ${error.message || error}`);
+    }
+  });
+}
+
+async function setUserRole(userId, role) {
+  const client = await ensureSupabase();
+  if (!client) throw new Error("Supabase не настроен");
+
+  const payload = {
+    user_id: userId,
+    role,
+  };
+
+  const { error } = await client
+    .from("app_roles")
+    .upsert(payload, { onConflict: "user_id" });
+
+  if (error) throw error;
+}
+
+async function removeAdminRole(userId) {
+  const client = await ensureSupabase();
+  if (!client) throw new Error("Supabase не настроен");
+
+  const { error } = await client
+    .from("app_roles")
+    .delete()
+    .eq("user_id", userId);
+
+  if (error) throw error;
+}
+
+async function renderAdminUsers() {
+  setActiveNav("admin-users");
+
+  const app = $("#app");
+  if (!app) return;
+
+  if (!isAdminUser) {
+    app.innerHTML = `
+      <section class="card">
+        <h2>Доступ запрещён</h2>
+        <p>Эта страница доступна только администратору.</p>
+        <a class="btn" href="#/modules">К модулям</a>
+      </section>
+    `;
+    return;
+  }
+
+  app.innerHTML = `
+    <section class="card">
+      <h1>Пользователи</h1>
+      <div class="meta">Загрузка списка пользователей...</div>
+    </section>
+  `;
+
+  try {
+    const users = await fetchAdminUsers();
+
+    app.innerHTML = `
+      <section class="grid">
+        <section class="card">
+          <div class="row" style="justify-content:space-between; align-items:center;">
+            <div>
+              <h1 style="margin:0;">Пользователи</h1>
+              <div class="meta" style="margin-top:6px;">
+                Здесь можно просматривать зарегистрированных пользователей и назначать им роль администратора.
+              </div>
+            </div>
+            <a class="btn secondary" href="#/admin">Назад</a>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="list">
+            ${users.length
+        ? users
+          .map(
+            (user) => `
+                        <div class="module" data-user-id="${htmlEscape(user.id)}">
+                          <div>
+                            <div class="title">${htmlEscape(user.full_name || "Без имени")}</div>
+                            <div class="desc">${htmlEscape(user.email || "Email не указан")}</div>
+                            <div class="meta" style="margin-top:6px;">
+                              ID: ${htmlEscape(user.id)}
+                            </div>
+                          </div>
+
+                          <div class="right" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <span class="badge ${user.role === "admin" ? "good" : "accent"}">
+                              ${htmlEscape(user.role)}
+                            </span>
+
+                            ${user.role === "admin"
+                ? `<button class="btn secondary js-demote" data-id="${htmlEscape(user.id)}">Снять админа</button>`
+                : `<button class="btn js-promote" data-id="${htmlEscape(user.id)}">Сделать админом</button>`
+              }
+                          </div>
+                        </div>
+                      `
+          )
+          .join("")
+        : `<div class="meta">Пользователи не найдены.</div>`
+      }
+          </div>
+        </section>
+      </section>
+    `;
+
+    $$(".js-promote").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const userId = btn.dataset.id;
+        if (!userId) return;
+
+        if (!confirm("Назначить пользователя администратором?")) return;
+
+        btn.disabled = true;
+        try {
+          await setUserRole(userId, "admin");
+          alert("Пользователь назначен администратором");
+          await loadUserRole();
+          await renderAdminUsers();
+        } catch (error) {
+          console.error(error);
+          alert(`Ошибка назначения роли: ${error.message || error}`);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+
+    $$(".js-demote").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const userId = btn.dataset.id;
+        if (!userId) return;
+
+        if (authUser?.id === userId) {
+          alert("Нельзя снять роль администратора у самого себя через эту страницу.");
+          return;
+        }
+
+        if (!confirm("Снять роль администратора у пользователя?")) return;
+
+        btn.disabled = true;
+        try {
+          await removeAdminRole(userId);
+          alert("Роль администратора снята");
+          await loadUserRole();
+          await renderAdminUsers();
+        } catch (error) {
+          console.error(error);
+          alert(`Ошибка изменения роли: ${error.message || error}`);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (error) {
+    console.error(error);
+    app.innerHTML = `
+      <section class="card">
+        <h2>Ошибка</h2>
+        <div class="alert bad">
+          Не удалось загрузить пользователей: ${htmlEscape(error.message || String(error))}
+        </div>
+      </section>
+    `;
+  }
+}
+
 function renderNotFound() {
   const app = $("#app");
-  app.innerHTML = `<div class="card"><h2>Страница не найдена</h2><a class="btn" href="#/modules">На главную</a></div>`;
+  if (!app) return;
+
+  app.innerHTML = `
+    <div class="card">
+      <h2>Страница не найдена</h2>
+      <a class="btn" href="#/modules">На главную</a>
+    </div>
+  `;
 }
