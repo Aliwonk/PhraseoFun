@@ -1,4 +1,4 @@
-const CACHE_NAME = "phraseofun-pwa-v2";
+const CACHE_NAME = "phraseofun-pwa-v3";
 const PRECACHE = [
   "./",
   "./index.html",
