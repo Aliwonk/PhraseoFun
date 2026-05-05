@@ -1,10 +1,10 @@
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./supabaseConfig.js";
+import { SUP_URL, SUP_ANON_KEY } from "./supabaseConfig.js";
 
 let _client = null;
 let _loading = null;
 
 export function isSupabaseConfigured() {
-  return Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+  return Boolean(SUP_URL && SUP_ANON_KEY);
 }
 
 export async function getSupabaseClient() {
@@ -19,7 +19,7 @@ export async function getSupabaseClient() {
     );
     const { createClient } = mod;
 
-    _client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    _client = createClient(SUP_URL, SUP_ANON_KEY, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
