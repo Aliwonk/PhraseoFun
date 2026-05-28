@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from "./supabaseClient.js";
+import { modules as staticModules, phrases as staticPhrases, exercises as staticExercises } from "./data.js";
 
 const CONTENT_CACHE_KEY = "phraseofun_content_v1";
 
@@ -27,21 +28,30 @@ function buildContent(modules, phrases, links) {
         phrases,
         phrasesById: phraseMap,
         moduleById,
+        exercises: staticExercises,
     };
 }
 
 function loadCachedContent() {
     try {
         const raw = localStorage.getItem(CONTENT_CACHE_KEY);
-        if (!raw) return { modules: [], phrases: [], phrasesById: {}, moduleById: {} };
-        return JSON.parse(raw);
+        if (!raw) {
+            const phraseMap = Object.fromEntries(staticPhrases.map(p => [p.id, p]));
+            const moduleById = Object.fromEntries(staticModules.map(m => [m.id, m]));
+            return { modules: staticModules, phrases: staticPhrases, phrasesById: phraseMap, moduleById, exercises: staticExercises };
+        }
+        const parsed = JSON.parse(raw);
+        return { ...parsed, exercises: staticExercises };
     } catch {
-        return { modules: [], phrases: [], phrasesById: {}, moduleById: {} };
+        const phraseMap = Object.fromEntries(staticPhrases.map(p => [p.id, p]));
+        const moduleById = Object.fromEntries(staticModules.map(m => [m.id, m]));
+        return { modules: staticModules, phrases: staticPhrases, phrasesById: phraseMap, moduleById, exercises: staticExercises };
     }
 }
 
 function saveCachedContent(content) {
-    localStorage.setItem(CONTENT_CACHE_KEY, JSON.stringify(content));
+    const { exercises, ...rest } = content;
+    localStorage.setItem(CONTENT_CACHE_KEY, JSON.stringify(rest));
 }
 
 export async function loadContent() {

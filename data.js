@@ -98,16 +98,16 @@ export const modules = [
     "grade": "6",
     "level": "Beginner",
     "title": "«Daily Routines» (Ежедневные дела)",
-    "context": "I wake up early. Can I try on this dress?",
+    "context": "I wake up early. I'm an early bird, not a night owl!",
     "phraseIds": [
       "p0041",
       "p0042",
       "p0043",
       "p0044",
-      "p0045",
       "p0046",
       "p0047",
-      "p0048"
+      "p0242",
+      "p0039"
     ]
   },
   {
@@ -204,12 +204,10 @@ export const modules = [
       "p0088",
       "p0089",
       "p0090",
-      "p0091",
       "p0092",
-      "p0093",
-      "p0094",
-      "p0095",
-      "p0096"
+      "p0096",
+      "p0016",
+      "p0093"
     ]
   },
   {
@@ -1726,6 +1724,11 @@ export const phrases = [
     "id": "p0241",
     "en": "through thick and thin",
     "ru": "в горе и в радости, несмотря ни на что"
+  },
+  {
+    "id": "p0242",
+    "en": "get out of bed on the wrong side",
+    "ru": "встать с левой ноги"
   }
 ];
 
@@ -1738,3 +1741,180 @@ export const phrasesById = phrases.reduce((acc, p) => {
 export function getModuleById(id) {
   return modules.find(m => m.id === id);
 }
+
+// ─── Structured exercises (demo) ─────────────────────────────────────────────
+const _S = "https://axuwhqpmhxphyrrevaso.supabase.co/storage/v1/object/public";
+
+export const exercises = {
+  m01: [
+    {
+      id: "q_m01_e01", type: "img_options",
+      heading: "Нажми на картинку к фразе",
+      prompt: "get up", hint: "вставать",
+      options: [
+        { text: "get up", image_url: _S + "/phrase-images/p0001.jpg", correct: true },
+        // { text: "help about the house", image_url: _S + "/phrase-images/p0005.jpg", correct: false },
+        { text: "make breakfast", image_url: _S + "/phrase-images/p0008.jpg", correct: false },
+        { text: "look like", image_url: _S + "/phrase-images/p0003.jpg", correct: false },
+      ],
+    },
+    {
+      id: "q_m01_e02", type: "choice",
+      heading: "Прочитай и выбери правильную фразу",
+      prompt: '"I have a good relationship with my sister."',
+      options: [
+        { text: "get up", correct: false },
+        { text: "look like", correct: false },
+        { text: "get on with", correct: true },
+        { text: "make breakfast", correct: false },
+      ],
+    },
+    {
+      id: "q_m01_e03", type: "word_spelling",
+      heading: "Составь слово из букв",
+      prompt: 'I __________ with my brother. We are friends.',
+      answer: "get on",
+      letters: ["g", "e", "t", "o", "n", "l", "p", "i", "k", "u"],
+    },
+    {
+      id: "q_m01_e04", type: "word_order",
+      heading: "Составь предложение",
+      words: ["I", "get", "up", "at 7", "every", "morning"],
+      answer: "I get up at 7 every morning",
+    },
+    {
+      id: "q_m01_e05", type: "choice",
+      heading: "Мини-диалог: выбери лучший ответ",
+      prompt: 'Mike: "Do you help at home?" — You: ______',
+      badge: "🏠 Home Helper",
+      options: [
+        { text: "Yes, I look like my dad.", correct: false },
+        { text: "Yes, I help about the house.", correct: true },
+        { text: "Yes, I get up at 7.", correct: false },
+      ],
+    },
+  ],
+
+  m07: [
+    {
+      id: "q_m07_e01", type: "choice",
+      heading: "Morning or Night?",
+      prompt: '"I love waking up at 5 am to see the sunrise!"',
+      hint: "Кто это — early bird или night owl?",
+      options: [
+        { text: "EARLY BIRD", image_url: _S + "/phrase-images/p0047.jpg", correct: true },
+        { text: "NIGHT OWL", image_url: _S + "/phrase-images/p0046.jpg", correct: false },
+      ],
+    },
+    {
+      id: "q_m07_e02", type: "choice",
+      heading: "What\'s wrong? Look at the picture.",
+      image_url: _S + "/question-images/q_m07_e02.jpg",
+      options: [
+        { text: "He is a night owl.", correct: false },
+        { text: "He got out of bed on the wrong side.", correct: true },
+        { text: "He is an early bird.", correct: false },
+      ],
+    },
+    {
+      id: "q_m07_e03", type: "ordering",
+      heading: "Расставь по порядку",
+      hint: "Нажимай карточки по порядку (1 → 2 → 3 → 4)",
+      items: [
+        { text: "wake up", order: 1 },
+        { text: "turn on the light", order: 2 },
+        { text: "take off pajamas", order: 3 },
+        { text: "put on clothes", order: 4 },
+      ],
+    },
+    {
+      id: "q_m07_e04a", type: "fill_blanks",
+      heading: "Заполни пропуски",
+      hint: "Нажми на слово из банка",
+      text: "My sister is [1]. She stays up late. I\'m the opposite — I\'m an [2].",
+      blanks: { 1: "night owl", 2: "early bird" },
+      wordBank: ["night owl", "early bird", "wake up", "get out of bed on the wrong side"],
+    },
+    {
+      id: "q_m07_e04b", type: "fill_blanks",
+      heading: "Заполни пропуски",
+      hint: "Нажми на слово из банка",
+      text: "I [1] at 6 am, but if I\'m tired, I [2] and feel grumpy all day.",
+      blanks: { 1: "wake up", 2: "get out of bed on the wrong side" },
+      wordBank: ["wake up", "get out of bed on the wrong side", "night owl", "early bird"],
+    },
+    {
+      id: "q_m07_e05", type: "ordering",
+      heading: "Get ready! Tap in the right order.",
+      hint: "Нажимай в правильном порядке",
+      badge: "🎒 Ready for school!",
+      items: [
+        { text: "turn on", image_url: _S + "/phrase-images/p0042.jpg", order: 1 },
+        { text: "take off pajamas", image_url: _S + "/phrase-images/p0044.jpg", order: 2 },
+        { text: "put on clothes", image_url: _S + "/phrase-images/p0043.jpg", order: 3 },
+        { text: "have breakfast", image_url: _S + "/phrase-images/p0039.jpg", order: 4 },
+      ],
+    },
+  ],
+
+  m13: [
+    {
+      id: "q_m13_e01", type: "ordering",
+      heading: "Расставь события путешествия по порядку",
+      hint: "Нажимай в правильном порядке",
+      items: [
+        { text: "set off", order: 1 },
+        { text: "see off", order: 2 },
+        { text: "check in", order: 3 },
+        { text: "break down", order: 4 },
+        { text: "arrive safe and sound", order: 5 },
+      ],
+    },
+    {
+      id: "q_m13_e02a", type: "choice",
+      heading: "Посмотри на картинку. Что произошло?",
+      image_url: _S + "/question-images/q_m13_e02a.jpg",
+      options: [
+        { text: "went down in flames", correct: false },
+        { text: "broke down", correct: true },
+      ],
+    },
+    {
+      id: "q_m13_e02b", type: "choice",
+      heading: "Посмотри на картинку. Что произошло?",
+      image_url: _S + "/question-images/q_m13_e02b.jpg",
+      options: [
+        { text: "went down in flames", correct: true },
+        { text: "broke down", correct: false },
+      ],
+    },
+    {
+      id: "q_m13_e03a", type: "choice",
+      heading: "Выбери правильный глагол",
+      prompt: 'We need to ___ off before sunrise to avoid traffic.',
+      options: [
+        { text: "a) set", correct: true },
+        { text: "b) go", correct: false },
+        { text: "c) hit", correct: false },
+      ],
+    },
+    {
+      id: "q_m13_e03b", type: "choice",
+      heading: "Выбери правильный глагол",
+      prompt: 'My whole family came to ____ me off at the station.',
+      options: [
+        { text: "a) take", correct: false },
+        { text: "b) see", correct: true },
+        { text: "c) put", correct: false },
+      ],
+    },
+    {
+      id: "q_m13_e04", type: "fill_blanks",
+      heading: "Заполни диалог",
+      hint: "Нажимай слова из банка",
+      text: 'Anna: \"Our flight is at 6 am. We need to [1] very early.\"\nBen: \"OK. Should we [2] online first?\"\nAnna: \"Yes! And I hope the car doesn\'t [3].\"\nBen: \"Don\'t worry! We\'ll arrive [4].\"',
+      blanks: { 1: "set off", 2: "check in", 3: "break down", 4: "safe and sound" },
+      wordBank: ["safe and sound", "check in", "break down", "set off"],
+    },
+  ],
+};

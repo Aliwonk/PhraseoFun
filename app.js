@@ -461,6 +461,7 @@ async function upsertPhrase(phraseData) {
     id: String(phraseData.id).trim(),
     en: String(phraseData.en).trim(),
     ru: String(phraseData.ru).trim(),
+    image_url: String(phraseData.image_url || "").trim() || null,
     sort_order: Number(phraseData.sort_order || 0),
     is_published: Boolean(phraseData.is_published),
   };
@@ -727,6 +728,7 @@ function renderModule(id) {
 
     return `
       <div class="phrase">
+        ${p.image_url ? `<img class="phrase-img" src="${htmlEscape(p.image_url)}" alt="${htmlEscape(p.en)}" loading="lazy" />` : ""}
         <div style="flex:1">
           <div class="en">${htmlEscape(p.en)}</div>
           <div class="ru">${htmlEscape(p.ru || "—")}</div>
@@ -773,19 +775,53 @@ function renderModule(id) {
   });
 }
 
+
 function renderPractice(id) {
   setActiveNav("modules");
-
   const app = $("#app");
   if (!app) return;
 
   const m = content.moduleById[id];
-
   if (!m) {
     app.innerHTML = `<div class="card"><h2>Модуль не найден</h2><a class="btn" href="#/modules">Назад</a></div>`;
     return;
   }
 
+  // ── Structured exercises (if available for this module) ──────────────────
+  const exList = (content.exercises || {})[id];
+  if (exList && exList.length > 0) {
+    let idx = 0;
+    let correctCount = 0;
+
+    function advance(wasCorrect) {
+      if (wasCorrect) correctCount++;
+      idx++;
+      if (idx >= exList.length) {
+        const lastBadge = [...exList].reverse().find((e) => e.badge)?.badge || null;
+        finishPractice(m, correctCount, exList.length, lastBadge);
+      } else {
+        showEx();
+      }
+    }
+
+    function showEx() {
+      const ex = exList[idx];
+      const progress = `${idx + 1} / ${exList.length}`;
+      const navRow = `
+        <div class="row">
+          <a class="btn secondary" href="#/module/${htmlEscape(m.id)}">← Назад</a>
+          <span class="badge">${htmlEscape(m.level)}</span>
+          <span class="badge accent">${htmlEscape(m.grade)} класс</span>
+          <span style="margin-left:auto" class="meta">${progress}</span>
+        </div>`;
+      dispatchExercise(app, ex, navRow, advance);
+    }
+
+    showEx();
+    return;
+  }
+
+  // ── Dynamic quiz (fallback for modules without structured exercises) ──────
   const pool = (m.phraseIds || []).filter((pid) => content.phrasesById[pid]);
   const take = shuffle(pool).slice(0, Math.min(10, pool.length));
 
@@ -795,165 +831,458 @@ function renderPractice(id) {
         <a class="btn secondary" href="#/module/${m.id}">← Назад</a>
         <h2 style="margin-top:12px">Практика</h2>
         <div class="meta">Недостаточно фраз для квиза (нужно хотя бы 4).</div>
-      </div>
-    `;
+      </div>`;
     return;
   }
 
   const allRu = content.phrases.map((p) => p.ru).filter(Boolean);
+  const allEn = content.phrases.map((p) => p.en).filter(Boolean);
+  const modulePhrasesWithImages = pool.map((pid) => content.phrasesById[pid]).filter((p) => p && p.image_url);
 
   const questions = take.map((pid) => {
     const p = content.phrasesById[pid];
-    const correct = p.ru || "";
-    const distractors = shuffle(allRu.filter((x) => x && x !== correct)).slice(0, 3);
-    const options = shuffle([correct, ...distractors]);
+    const roll = Math.random();
+    const canImg = Boolean(p.image_url);
+    const canImgOpts = canImg && modulePhrasesWithImages.length >= 4;
 
-    return {
-      pid,
-      prompt: p.en,
-      correct,
-      options,
-    };
+    if (canImgOpts && roll < 0.33) {
+      const correctImg = p.image_url;
+      const distractors = shuffle(modulePhrasesWithImages.filter((x) => x.image_url !== correctImg).map((x) => x.image_url)).slice(0, 3);
+      return { pid, type: "img_options", prompt: p.en, hint: p.ru, correct: correctImg, options: shuffle([correctImg, ...distractors]) };
+    } else if (canImg && roll < 0.66) {
+      const correct = p.en;
+      const distractors = shuffle(allEn.filter((x) => x && x !== correct)).slice(0, 3);
+      return { pid, type: "img_prompt", image_url: p.image_url, prompt: p.ru, correct, options: shuffle([correct, ...distractors]) };
+    } else {
+      const correct = p.ru || "";
+      const distractors = shuffle(allRu.filter((x) => x && x !== correct)).slice(0, 3);
+      return { pid, type: "text", prompt: p.en, correct, options: shuffle([correct, ...distractors]) };
+    }
   });
 
-  let idx = 0;
-  let correctCount = 0;
+  let qIdx = 0;
+  let qCorrect = 0;
   let locked = false;
 
   function renderQ() {
-    const q = questions[idx];
-    const progress = `${idx + 1} / ${questions.length}`;
+    const q = questions[qIdx];
+    const progress = `${qIdx + 1} / ${questions.length}`;
+    const heading = q.type === "img_options" ? "Выбери картинку к фразе"
+      : q.type === "img_prompt" ? "Выбери фразу по картинке" : "Выбери перевод";
+
+    const promptHtml = q.type === "img_options"
+      ? `<div class="qprompt"><div>${htmlEscape(q.prompt)}</div><div class="qimg-hint" style="margin-top:4px">${htmlEscape(q.hint)}</div></div>`
+      : q.type === "img_prompt"
+        ? `<div class="qimg-wrap"><img class="qimg" src="${htmlEscape(q.image_url)}" alt="?" loading="lazy" /><div class="qimg-hint">${htmlEscape(q.prompt)}</div></div>`
+        : `<div class="qprompt">${htmlEscape(q.prompt)}</div>`;
+
+    const optsHtml = q.type === "img_options"
+      ? `<div id="opts" class="opts-img">${q.options.map((url) => `<div class="option option--img" data-opt="${htmlEscape(url)}"><img src="${htmlEscape(url)}" alt="?" loading="lazy" /></div>`).join("")}</div>`
+      : `<div id="opts" class="quiz">${q.options.map((opt, i) => `<div class="option" data-opt="${htmlEscape(opt)}"><div class="badge">${String.fromCharCode(65 + i)}</div><div>${htmlEscape(opt || "—")}</div></div>`).join("")}</div>`;
 
     app.innerHTML = `
-      <div class="grid">
-        <section class="card">
-          <div class="row">
-            <a class="btn secondary" href="#/module/${m.id}">← Назад к модулю</a>
-            <span class="badge">${htmlEscape(m.level)}</span>
-            <span class="badge accent">${htmlEscape(m.grade)} класс</span>
-            <span style="margin-left:auto" class="meta">${progress}</span>
+      <div class="grid"><section class="card">
+        <div class="row">
+          <a class="btn secondary" href="#/module/${m.id}">← Назад к модулю</a>
+          <span class="badge">${htmlEscape(m.level)}</span>
+          <span class="badge accent">${htmlEscape(m.grade)} класс</span>
+          <span style="margin-left:auto" class="meta">${progress}</span>
+        </div>
+        <h2 style="margin-top:12px">${heading}</h2>
+        <div class="quiz" style="margin-top:10px">
+          ${promptHtml}${optsHtml}
+          <div class="row" style="margin-top:8px">
+            <span class="meta">Правильных: ${qCorrect}</span>
+            <span style="margin-left:auto"></span>
+            <button id="skip" class="btn secondary" type="button">Пропустить</button>
           </div>
-          <h2 style="margin-top:12px">Практика: выбери перевод</h2>
-          <div class="quiz" style="margin-top:10px">
-            <div class="qprompt">${htmlEscape(q.prompt)}</div>
-            <div id="opts" class="quiz">
-              ${q.options.map((opt, i) => `
-                <div class="option" data-opt="${htmlEscape(opt)}">
-                  <div class="badge">${String.fromCharCode(65 + i)}</div>
-                  <div>${htmlEscape(opt || "—")}</div>
-                </div>
-              `).join("")}
-            </div>
-            <div class="row" style="margin-top:8px">
-              <span class="meta">Правильных: ${correctCount}</span>
-              <span style="margin-left:auto"></span>
-              <button id="skip" class="btn secondary" type="button">Пропустить</button>
-            </div>
-          </div>
-        </section>
-      </div>
-    `;
+        </div>
+      </section></div>`;
 
-    $("#skip")?.addEventListener("click", () => {
-      if (locked) return;
-      next();
-    });
-
+    $("#skip")?.addEventListener("click", () => { if (!locked) nextQ(); });
     $$(".option").forEach((el) => {
       el.addEventListener("click", () => {
         if (locked) return;
-
         locked = true;
-
         const picked = el.dataset.opt || "";
         const isRight = picked === q.correct;
-
-        if (isRight) correctCount++;
-
+        if (isRight) qCorrect++;
         $$(".option").forEach((o) => {
-          const opt = o.dataset.opt || "";
-          if (opt === q.correct) o.classList.add("correct");
-          if (opt === picked && !isRight) o.classList.add("wrong");
+          if (o.dataset.opt === q.correct) o.classList.add("correct");
+          if (o.dataset.opt === picked && !isRight) o.classList.add("wrong");
         });
-
-        setTimeout(() => next(), 600);
+        setTimeout(() => nextQ(), 600);
       });
     });
   }
 
-  function next() {
-    locked = false;
-    idx++;
-
-    if (idx >= questions.length) {
-      finish();
-    } else {
-      renderQ();
-    }
-  }
-
-  function finish() {
-    const score = Math.round((correctCount / questions.length) * 100);
-    const earned = correctCount * 10;
-
-    const t = todayISO();
-
-    if (state.streak.lastDate === t) {
-      // nothing
-    } else {
-      const last = state.streak.lastDate ? new Date(state.streak.lastDate) : null;
-      const now = new Date(t);
-      const diffDays = last ? Math.round((now - last) / (24 * 3600 * 1000)) : 999;
-
-      if (diffDays === 1) state.streak.count = (state.streak.count || 0) + 1;
-      else state.streak.count = 1;
-
-      state.streak.lastDate = t;
-    }
-
-    state.xp += earned;
-    state.completed[m.id] = {
-      done: score >= 70,
-      best: Math.max(state.completed[m.id]?.best ?? 0, score),
-      lastScore: score,
-      lastAt: Date.now(),
-    };
-
-    saveState();
-
-    app.innerHTML = `
-      <div class="grid">
-        <section class="card">
-          <div class="row">
-            <a class="btn secondary" href="#/module/${m.id}">← Назад к модулю</a>
-            <a class="btn" href="#/modules">К списку модулей</a>
-            <span style="margin-left:auto" class="badge good">+${earned} XP</span>
-          </div>
-          <h2 style="margin-top:12px">Результат</h2>
-          <div class="kpi" style="margin-top:12px">
-            <div class="tile">
-              <div class="meta">Счёт</div>
-              <div class="num">${score}%</div>
-            </div>
-            <div class="tile">
-              <div class="meta">Правильных</div>
-              <div class="num">${correctCount}/${questions.length}</div>
-            </div>
-            <div class="tile">
-              <div class="meta">Стрик</div>
-              <div class="num">${state.streak.count} 🔥</div>
-            </div>
-          </div>
-          <div class="meta" style="margin-top:10px">
-            Модуль считается завершённым при результате ≥ 70%.
-          </div>
-        </section>
-      </div>
-    `;
-  }
-
+  function nextQ() { locked = false; qIdx++; qIdx >= questions.length ? finishPractice(m, qCorrect, questions.length, null) : renderQ(); }
   renderQ();
 }
+
+/* ─── Shared finish screen ─────────────────────────────────────────────────── */
+function finishPractice(m, correctCount, total, badge) {
+  const app = $("#app");
+  if (!app) return;
+
+  const score = Math.round((correctCount / total) * 100);
+  const earned = correctCount * 10;
+  const t = todayISO();
+
+  if (state.streak.lastDate !== t) {
+    const last = state.streak.lastDate ? new Date(state.streak.lastDate) : null;
+    const diff = last ? Math.round((new Date(t) - last) / 86400000) : 999;
+    state.streak.count = diff === 1 ? (state.streak.count || 0) + 1 : 1;
+    state.streak.lastDate = t;
+  }
+
+  state.xp += earned;
+  state.completed[m.id] = {
+    done: score >= 70,
+    best: Math.max(state.completed[m.id]?.best ?? 0, score),
+    lastScore: score,
+    lastAt: Date.now(),
+  };
+  saveState();
+
+  app.innerHTML = `
+    <div class="grid"><section class="card">
+      <div class="row">
+        <a class="btn secondary" href="#/module/${m.id}">← Назад к модулю</a>
+        <a class="btn" href="#/modules">К списку модулей</a>
+        <span style="margin-left:auto" class="badge good">+${earned} XP</span>
+      </div>
+      <h2 style="margin-top:12px">Результат</h2>
+      ${badge ? `<div class="ex-badge-earned">${htmlEscape(badge)}</div>` : ""}
+      <div class="kpi" style="margin-top:12px">
+        <div class="tile"><div class="meta">Счёт</div><div class="num">${score}%</div></div>
+        <div class="tile"><div class="meta">Правильных</div><div class="num">${correctCount}/${total}</div></div>
+        <div class="tile"><div class="meta">Стрик</div><div class="num">${state.streak.count} 🔥</div></div>
+      </div>
+      <div class="meta" style="margin-top:10px">Модуль считается завершённым при результате ≥ 70%.</div>
+    </section></div>`;
+}
+
+/* ─── Exercise dispatcher ──────────────────────────────────────────────────── */
+function dispatchExercise(app, ex, navRow, advance) {
+  switch (ex.type) {
+    case "img_options": return exImgOptions(app, ex, navRow, advance);
+    case "choice": return exChoice(app, ex, navRow, advance);
+    case "ordering": return exOrdering(app, ex, navRow, advance);
+    case "fill_blanks": return exFillBlanks(app, ex, navRow, advance);
+    case "word_order": return exWordOrder(app, ex, navRow, advance);
+    case "word_spelling": return exWordSpelling(app, ex, navRow, advance);
+    default: return exChoice(app, ex, navRow, advance);
+  }
+}
+
+/* ─── choice / img_prompt ──────────────────────────────────────────────────── */
+function exChoice(app, ex, navRow, advance) {
+  const promptHtml = ex.image_url
+    ? `<div class="qimg-wrap"><img class="qimg" src="${htmlEscape(ex.image_url)}" alt="?" loading="lazy" /></div>`
+    : ex.prompt ? `<div class="qprompt">${htmlEscape(ex.prompt)}</div>` : "";
+  const hintHtml = ex.hint ? `<div class="qimg-hint" style="margin-bottom:4px">${htmlEscape(ex.hint)}</div>` : "";
+
+  const hasImgOpts = ex.options.some((o) => o.image_url);
+  const optsHtml = hasImgOpts
+    ? `<div class="opts-img opts-img--labeled">
+        ${ex.options.map((o) => `
+          <div class="option option--img" data-correct="${o.correct}">
+            <img src="${htmlEscape(o.image_url || "")}" alt="${htmlEscape(o.text)}" loading="lazy" />
+            <div class="opt-label">${htmlEscape(o.text)}</div>
+          </div>`).join("")}
+       </div>`
+    : `<div class="quiz">
+        ${ex.options.map((o, i) => `
+          <div class="option" data-correct="${o.correct}">
+            <div class="badge">${String.fromCharCode(65 + i)}</div>
+            <div>${htmlEscape(o.text)}</div>
+          </div>`).join("")}
+       </div>`;
+
+  app.innerHTML = `<div class="grid"><section class="card">
+    ${navRow}
+    <h2 style="margin-top:12px">${htmlEscape(ex.heading || "Выбери правильный ответ")}</h2>
+    <div class="quiz" style="margin-top:10px">${promptHtml}${hintHtml}${optsHtml}</div>
+  </section></div>`;
+
+  let locked = false;
+  $$(".option").forEach((el) => {
+    el.addEventListener("click", () => {
+      if (locked) return;
+      locked = true;
+      const isRight = el.dataset.correct === "true";
+      $$(".option").forEach((o) => {
+        if (o.dataset.correct === "true") o.classList.add("correct");
+        else if (o === el && !isRight) o.classList.add("wrong");
+      });
+      setTimeout(() => advance(isRight), 700);
+    });
+  });
+}
+
+/* ─── img_options ──────────────────────────────────────────────────────────── */
+function exImgOptions(app, ex, navRow, advance) {
+  app.innerHTML = `<div class="grid"><section class="card">
+    ${navRow}
+    <h2 style="margin-top:12px">${htmlEscape(ex.heading || "Выбери картинку к фразе")}</h2>
+    <div class="qprompt" style="margin-top:10px">${htmlEscape(ex.prompt)}</div>
+    ${ex.hint ? `<div class="qimg-hint">${htmlEscape(ex.hint)}</div>` : ""}
+    <div class="opts-img" style="margin-top:12px">
+      ${ex.options.map((o) => `
+        <div class="option option--img" data-correct="${o.correct}">
+          <img src="${htmlEscape(o.image_url || "")}" alt="${htmlEscape(o.text)}" loading="lazy" />
+        </div>`).join("")}
+    </div>
+  </section></div>`;
+
+  let locked = false;
+  $$(".option--img").forEach((el) => {
+    el.addEventListener("click", () => {
+      if (locked) return;
+      locked = true;
+      const isRight = el.dataset.correct === "true";
+      $$(".option--img").forEach((o) => {
+        if (o.dataset.correct === "true") o.classList.add("correct");
+        else if (o === el && !isRight) o.classList.add("wrong");
+      });
+      setTimeout(() => advance(isRight), 700);
+    });
+  });
+}
+
+/* ─── ordering ─────────────────────────────────────────────────────────────── */
+function exOrdering(app, ex, navRow, advance) {
+  const items = shuffle([...ex.items]);
+  const total = items.length;
+  let nextNum = 1;
+  const assigned = new Map(); // el → number
+
+  const hasImages = items.some((it) => it.image_url);
+
+  function render() {
+    app.innerHTML = `<div class="grid"><section class="card">
+      ${navRow}
+      <h2 style="margin-top:12px">${htmlEscape(ex.heading || "Расставь по порядку")}</h2>
+      ${ex.hint ? `<div class="meta" style="margin-bottom:10px">${htmlEscape(ex.hint)}</div>` : ""}
+      <div class="ord-grid${hasImages ? " ord-grid--img" : ""}" id="ord-grid">
+        ${items.map((it, i) => {
+      const num = assigned.get(i);
+      return `
+            <div class="ord-item${num ? " ord-picked" : ""}" data-order="${it.order}" data-idx="${i}">
+              ${it.image_url ? `<img src="${htmlEscape(it.image_url)}" alt="${htmlEscape(it.text)}" loading="lazy" class="ord-img" />` : ""}
+              <div class="ord-label">${htmlEscape(it.text)}</div>
+              ${num ? `<div class="ord-num">${num}</div>` : ""}
+            </div>`;
+    }).join("")}
+      </div>
+    </section></div>`;
+
+    $$(".ord-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        const idx = Number(el.dataset.idx);
+        if (assigned.has(idx)) return;
+        assigned.set(idx, nextNum++);
+        render();
+
+        if (assigned.size === total) {
+          setTimeout(() => {
+            let allOk = true;
+            $$(".ord-item").forEach((o) => {
+              const got = assigned.get(Number(o.dataset.idx));
+              const want = Number(o.dataset.order);
+              if (got === want) o.classList.add("ord-correct");
+              else { o.classList.add("ord-wrong"); allOk = false; }
+            });
+            setTimeout(() => advance(allOk), 1100);
+          }, 200);
+        }
+      });
+    });
+  }
+  render();
+}
+
+/* ─── fill_blanks ──────────────────────────────────────────────────────────── */
+function exFillBlanks(app, ex, navRow, advance) {
+  const bank = shuffle([...ex.wordBank]);
+  const blankNums = Object.keys(ex.blanks).map(Number).sort((a, b) => a - b);
+  const filled = {}; // blankNum → { word, bankIdx }
+
+  function buildText() {
+    return ex.text.split("\n").map((line) => {
+      let l = htmlEscape(line);
+      blankNums.forEach((n) => {
+        const f = filled[n];
+        const cls = f ? "blank-slot blank-filled" : "blank-slot";
+        const val = f ? htmlEscape(f.word) : "_____";
+        l = l.split(`[${n}]`).join(`<span class="${cls}" data-n="${n}">${val}</span>`);
+      });
+      return `<div class="blank-line">${l}</div>`;
+    }).join("");
+  }
+
+  function render() {
+    const usedIdxs = new Set(Object.values(filled).map((f) => f.bankIdx));
+
+    app.innerHTML = `<div class="grid"><section class="card">
+      ${navRow}
+      <h2 style="margin-top:12px">${htmlEscape(ex.heading || "Заполни пропуски")}</h2>
+      ${ex.hint ? `<div class="meta" style="margin-bottom:6px">${htmlEscape(ex.hint)}</div>` : ""}
+      <div class="blank-text">${buildText()}</div>
+      <div class="word-bank">
+        ${bank.map((w, i) => `<span class="word-chip${usedIdxs.has(i) ? " used" : ""}" data-bi="${i}">${htmlEscape(w)}</span>`).join("")}
+      </div>
+      <div class="row" style="margin-top:14px">
+        <span class="meta" id="fill-status" style="color:var(--c-danger,#f87171)"></span>
+        <button class="btn" id="fill-check" style="margin-left:auto">Проверить</button>
+      </div>
+    </section></div>`;
+
+    $$(".word-chip:not(.used)").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const bi = Number(chip.dataset.bi);
+        const empty = blankNums.find((n) => !filled[n]);
+        if (empty === undefined) return;
+        filled[empty] = { word: bank[bi], bankIdx: bi };
+        render();
+      });
+    });
+
+    $$(".blank-slot.blank-filled").forEach((slot) => {
+      slot.addEventListener("click", () => {
+        delete filled[Number(slot.dataset.n)];
+        render();
+      });
+    });
+
+    $("#fill-check")?.addEventListener("click", () => {
+      if (!blankNums.every((n) => filled[n])) {
+        const s = $("#fill-status");
+        if (s) s.textContent = "Заполни все пропуски!";
+        return;
+      }
+      let allOk = true;
+      blankNums.forEach((n) => {
+        const slot = document.querySelector(`.blank-slot[data-n="${n}"]`);
+        const ok = filled[n].word === ex.blanks[n];
+        if (!ok) allOk = false;
+        slot?.classList.remove("blank-filled");
+        slot?.classList.add(ok ? "blank-correct" : "blank-wrong");
+      });
+      $$(".word-chip").forEach((c) => (c.style.pointerEvents = "none"));
+      $("#fill-check").disabled = true;
+      setTimeout(() => advance(allOk), 1200);
+    });
+  }
+  render();
+}
+
+/* ─── word_order ───────────────────────────────────────────────────────────── */
+function exWordOrder(app, ex, navRow, advance) {
+  const tiles = shuffle([...ex.words]);
+  const chosen = []; // tile indices in chosen order
+
+  function render() {
+    const usedSet = new Set(chosen);
+
+    app.innerHTML = `<div class="grid"><section class="card">
+      ${navRow}
+      <h2 style="margin-top:12px">${htmlEscape(ex.heading || "Составь предложение")}</h2>
+      ${ex.hint ? `<div class="meta" style="margin-bottom:6px">${htmlEscape(ex.hint)}</div>` : ""}
+      <div class="wo-answer" id="wo-answer">
+        ${chosen.length === 0
+        ? `<span class="wo-placeholder">Нажимай слова снизу…</span>`
+        : chosen.map((ti, ci) => `<span class="wo-token" data-ci="${ci}">${htmlEscape(tiles[ti])}</span>`).join("")}
+      </div>
+      <div class="word-tiles">
+        ${tiles.map((w, i) => `<span class="word-tile${usedSet.has(i) ? " used" : ""}" data-ti="${i}">${htmlEscape(w)}</span>`).join("")}
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn secondary" id="wo-clear" type="button">Очистить</button>
+        <button class="btn" id="wo-check" type="button" style="margin-left:auto">Проверить</button>
+      </div>
+    </section></div>`;
+
+    $$(".word-tile:not(.used)").forEach((tile) => {
+      tile.addEventListener("click", () => { chosen.push(Number(tile.dataset.ti)); render(); });
+    });
+    $$(".wo-token").forEach((tok) => {
+      tok.addEventListener("click", () => { chosen.splice(Number(tok.dataset.ci), 1); render(); });
+    });
+    $("#wo-clear")?.addEventListener("click", () => { chosen.length = 0; render(); });
+    $("#wo-check")?.addEventListener("click", () => {
+      const built = chosen.map((ti) => tiles[ti]).join(" ");
+      const isRight = built === ex.answer;
+      const ans = $("#wo-answer");
+      if (ans) ans.classList.add(isRight ? "wo-correct" : "wo-wrong");
+      if (!isRight) {
+        const d = document.createElement("div");
+        d.className = "meta wo-correction";
+        d.textContent = `Правильно: ${ex.answer}`;
+        ans?.after(d);
+      }
+      $("#wo-check").disabled = true;
+      setTimeout(() => advance(isRight), 1300);
+    });
+  }
+  render();
+}
+
+/* ─── word_spelling ────────────────────────────────────────────────────────── */
+function exWordSpelling(app, ex, navRow, advance) {
+  const tiles = shuffle([...ex.letters]);
+  const typed = []; // tile indices
+
+  function render() {
+    app.innerHTML = `<div class="grid"><section class="card">
+      ${navRow}
+      <h2 style="margin-top:12px">${htmlEscape(ex.heading || "Составь слово из букв")}</h2>
+      <div class="qprompt spell-prompt">${htmlEscape(ex.prompt)}</div>
+      <div class="spell-answer" id="spell-answer">
+        ${typed.length === 0
+        ? `<span class="spell-placeholder">Нажимай буквы…</span>`
+        : typed.map((ti, ci) => `<span class="spell-char" data-ci="${ci}">${tiles[ti] === " " ? "·" : htmlEscape(tiles[ti])}</span>`).join("")}
+      </div>
+      <div class="letter-tiles">
+        ${tiles.map((ch, i) => {
+          const usedCnt = typed.filter((ti) => tiles[ti] === ch).length;
+          const totalCnt = tiles.filter((t) => t === ch).length;
+          return `<span class="letter-tile${usedCnt >= totalCnt ? " used" : ""}" data-ti="${i}">${ch === " " ? "⎵" : htmlEscape(ch)}</span>`;
+        }).join("")}
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn secondary" id="spell-back" type="button">⌫ Стереть</button>
+        <button class="btn" id="spell-check" type="button" style="margin-left:auto">Проверить</button>
+      </div>
+    </section></div>`;
+
+    $$(".letter-tile:not(.used)").forEach((tile) => {
+      tile.addEventListener("click", () => { typed.push(Number(tile.dataset.ti)); render(); });
+    });
+    $$(".spell-char").forEach((ch) => {
+      ch.addEventListener("click", () => { typed.splice(Number(ch.dataset.ci), 1); render(); });
+    });
+    $("#spell-back")?.addEventListener("click", () => { if (typed.length) { typed.pop(); render(); } });
+    $("#spell-check")?.addEventListener("click", () => {
+      const built = typed.map((ti) => tiles[ti]).join("");
+      const isRight = built.toLowerCase() === ex.answer.toLowerCase();
+      const ans = $("#spell-answer");
+      if (ans) ans.classList.add(isRight ? "spell-correct" : "spell-wrong");
+      if (!isRight) {
+        const d = document.createElement("div");
+        d.className = "meta spell-correction";
+        d.textContent = `Правильно: ${ex.answer}`;
+        ans?.after(d);
+      }
+      $("#spell-check").disabled = true;
+      setTimeout(() => advance(isRight), 1300);
+    });
+  }
+  render();
+}
+
+
 
 function renderProfile() {
   setActiveNav("profile");
@@ -1412,6 +1741,14 @@ function renderAdmin() {
             <input id="admin-phrase-ru" name="ru" value="${htmlEscape(selectedPhrase?.ru || "")}" placeholder="Как дела?" />
           </div>
 
+          <div class="field">
+            <label for="admin-phrase-image">URL картинки</label>
+            <input id="admin-phrase-image" name="image_url" value="${htmlEscape(selectedPhrase?.image_url || "")}" placeholder="https://..." />
+            ${selectedPhrase?.image_url
+      ? `<img src="${htmlEscape(selectedPhrase.image_url)}" alt="preview" class="admin-img-preview" />`
+      : ""}
+          </div>
+
           <div class="row" style="gap:10px; flex-wrap:wrap;">
             <div class="field" style="flex:1; min-width:160px;">
               <label for="admin-phrase-sort">Порядок</label>
@@ -1572,6 +1909,7 @@ function renderAdmin() {
       id: String(fd.get("id") || "").trim(),
       en: String(fd.get("en") || "").trim(),
       ru: String(fd.get("ru") || "").trim(),
+      image_url: String(fd.get("image_url") || "").trim() || null,
       sort_order: Number(fd.get("sort_order") || 0),
       is_published: Boolean($("#admin-phrase-published")?.checked),
     };
