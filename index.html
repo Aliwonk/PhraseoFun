@@ -55,6 +55,12 @@
     </div>
     <main class="container" id="app"></main>
 
+    <script>
+      // Регистрируем SW до загрузки ES-модуля — раньше = надёжнее на мобильных
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      }
+    </script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>
