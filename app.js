@@ -1,4 +1,4 @@
-import { loadContent } from "./contentService.js";
+import { loadContent, loadStaticContent, refreshFromSupabase } from "./contentService.js";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabaseClient.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -556,19 +556,31 @@ window.addEventListener("online", () => {
 });
 
 async function initApp() {
+  // 1. Мгновенно: статика или localStorage-кэш
   try {
     content = await loadContent();
   } catch (e) {
-    console.error("Не удалось загрузить контент:", e);
+    content = loadStaticContent();
   }
 
   if (!location.hash) {
     location.hash = "#/modules";
   }
 
-  await initAuthOnce();
-  await loadUserRole();
+  // 2. Рендер сразу — пользователь видит модули без задержки
   render();
+
+  // 3. Параллельно: Supabase SDK + auth + свежие данные
+  refreshFromSupabase((fresh) => {
+    content = fresh;
+    render(); // обновить UI когда Supabase ответил
+  });
+
+  initAuthOnce().then(() => {
+    loadUserRole().then(() => {
+      renderNav();
+    });
+  });
 }
 
 initApp();
@@ -596,6 +608,27 @@ function renderModules() {
 
   const app = $("#app");
   if (!app) return;
+
+  // Скелетон пока контент не загружен
+  if (!content.modules.length) {
+    app.innerHTML = `
+      <div class="grid">
+        <section class="card">
+          <div class="skeleton skeleton-line" style="width:60%;height:20px;margin-bottom:12px"></div>
+          <div class="skeleton skeleton-line" style="width:100%;height:36px;margin-bottom:8px"></div>
+          <div class="skeleton skeleton-line" style="width:100%;height:36px"></div>
+        </section>
+        <section class="card">
+          ${[1, 2, 3, 4].map(() => `
+            <div class="skeleton-module">
+              <div class="skeleton skeleton-line" style="width:40%;height:14px;margin-bottom:8px"></div>
+              <div class="skeleton skeleton-line" style="width:85%;height:18px;margin-bottom:6px"></div>
+              <div class="skeleton skeleton-line" style="width:70%;height:13px"></div>
+            </div>`).join("")}
+        </section>
+      </div>`;
+    return;
+  }
 
   const levels = uniq(content.modules.map((m) => m.level).filter(Boolean));
 

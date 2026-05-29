@@ -917,3 +917,37 @@ select {
   text-align: center;
   margin-top: 6px;
 }
+
+/* ── Skeleton loader ──────────────────────────────── */
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+.skeleton {
+  border-radius: 6px;
+  background: linear-gradient(90deg,
+      rgba(148, 163, 184, .08) 25%,
+      rgba(148, 163, 184, .18) 50%,
+      rgba(148, 163, 184, .08) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+.skeleton-line {
+  display: block;
+}
+
+.skeleton-module {
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, .08);
+}
+
+.skeleton-module:last-child {
+  border-bottom: none;
+}
